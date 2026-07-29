@@ -447,6 +447,13 @@ def test_import_skill_main_把安装目录桥接进_subjects(tmp_path, monkeypat
         "---\nname: humanizer\ndescription: 去掉 AI 味\n---\n正文",
         encoding="utf-8",
     )
+    (source / "scripts").mkdir()
+    (source / "scripts" / "check.py").write_text("print('ok')", encoding="utf-8")
+    (source / ".git").mkdir()
+    (source / ".git" / "config").write_text(
+        "url = https://example.test/private.git", encoding="utf-8"
+    )
+    (source / ".env").write_text("SECRET=do-not-copy", encoding="utf-8")
 
     monkeypatch.setattr(sys, "argv", [
         "import_skill",
@@ -458,7 +465,13 @@ def test_import_skill_main_把安装目录桥接进_subjects(tmp_path, monkeypat
 
     imported = tmp_path / "subjects" / "humanizer" / "v7"
     assert (imported / "SKILL.md").is_file()
+    assert (imported / "scripts" / "check.py").is_file()
+    assert not (imported / ".git").exists()
+    assert not (imported / ".env").exists()
     assert (imported / "_meta.json").is_file()
+    metadata = json.loads((imported / "_meta.json").read_text(encoding="utf-8"))
+    assert metadata["source"] == "external:humanizer"
+    assert str(tmp_path) not in (imported / "_meta.json").read_text(encoding="utf-8")
     assert "已导入被测快照" in capsys.readouterr().out
 
 

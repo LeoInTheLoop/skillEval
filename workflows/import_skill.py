@@ -10,6 +10,7 @@ from pathlib import Path
 import frontmatter
 
 ROOT = Path(__file__).parent.parent
+IGNORED_IMPORT_NAMES = {".git", ".env", "__pycache__", ".DS_Store"}
 
 
 def resolve_source(path: str | Path) -> Path:
@@ -26,6 +27,14 @@ def resolve_source(path: str | Path) -> Path:
 def skill_id_for(source: Path) -> str:
     meta = frontmatter.loads((source / "SKILL.md").read_text(encoding="utf-8")).metadata
     return str(meta.get("name") or source.name)
+
+
+def public_source_label(source: Path) -> str:
+    """Record useful provenance without persisting a user's absolute path."""
+    try:
+        return source.resolve().relative_to(ROOT.resolve()).as_posix()
+    except ValueError:
+        return f"external:{source.name}"
 
 
 def import_snapshot(
@@ -45,10 +54,14 @@ def import_snapshot(
         raise FileExistsError(f"拒绝覆盖已有被测快照：{destination}")
 
     destination.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(source, destination)
+    shutil.copytree(
+        source,
+        destination,
+        ignore=shutil.ignore_patterns(*sorted(IGNORED_IMPORT_NAMES)),
+    )
     meta = {
         "imported_at": datetime.now().astimezone().isoformat(timespec="seconds"),
-        "source": str(source),
+        "source": public_source_label(source),
         "skill_id": skill_id,
         "version_dir": version,
     }
