@@ -78,8 +78,9 @@ def test_run_one_使用_matrix_里的_request_和_session_id(tmp_path, monkeypat
         "suite_version": "1.0",
         "dataset": "evals/datasets/demo.jsonl",
         "runtime": "capture",
-        "skills": {"mode": "routing_only", "cfg": "v1"},
+        "skills": {"mode": "full", "cfg": "v1"},
         "models": [{"id": "m"}],
+        "tools": ["read", "write"],
         "repeats": 2,
     }
     model = {"id": "m"}
@@ -101,6 +102,9 @@ def test_run_one_使用_matrix_里的_request_和_session_id(tmp_path, monkeypat
     ]
     assert [request.session_id for request in runtime.requests] == [
         task.session_id for task in tasks
+    ]
+    assert [request.allowed_tools for request in runtime.requests] == [
+        ["read", "write"], ["read", "write"]
     ]
     persisted = [
         json.loads(line) for line in (out / "runs.jsonl").read_text(encoding="utf-8").splitlines()

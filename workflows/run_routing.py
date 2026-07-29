@@ -204,6 +204,7 @@ def _request_for_task(
     mode: str,
     model: dict,
     skills: list[SkillMeta],
+    allowed_tools: list[str],
     timeout: int,
 ) -> InvocationRequest:
     turn = task.turn
@@ -218,6 +219,7 @@ def _request_for_task(
         skill_mode=mode,
         model=model,
         input_files=resolve_case_files(task.case, task.turn_index),
+        allowed_tools=allowed_tools,
         session_id=task.session_id,
         timeout_seconds=timeout,
     )
@@ -260,6 +262,7 @@ def _execute_conversation(
     mode: str,
     model: dict,
     skills: list[SkillMeta],
+    allowed_tools: list[str],
     timeout: int,
     runtime,
     environment,
@@ -268,7 +271,14 @@ def _execute_conversation(
 ) -> list[RunResult]:
     """同一 case/repeat 的 turns 串行执行，并共享 environment/session/workspace。"""
     requests = [
-        _request_for_task(task, mode=mode, model=model, skills=skills, timeout=timeout)
+        _request_for_task(
+            task,
+            mode=mode,
+            model=model,
+            skills=skills,
+            allowed_tools=allowed_tools,
+            timeout=timeout,
+        )
         for task in tasks
     ]
     results: list[RunResult] = []
@@ -473,6 +483,7 @@ def run_one(suite: dict, m: dict, skills: list[SkillMeta], tasks: list[MatrixTas
                 mode=mode,
                 model=m,
                 skills=skills,
+                allowed_tools=list(suite.get("tools") or []),
                 timeout=timeout,
                 runtime=runtime,
                 environment=environment,

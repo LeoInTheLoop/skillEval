@@ -292,29 +292,13 @@ def test_run_routing_main_full模式提示_score_full(tmp_path, monkeypatch, cap
                 ok=True,
             )
 
-    # Derive the full-mode suite from the tracked example instead of pointing at
-    # a private one: full-eval suites name the author's own skills and are
-    # gitignored, so a checked-in path here fails on every fresh clone.
-    import yaml
-
-    suite = yaml.safe_load(Path("evals/suites/example_routing.yaml").read_text(encoding="utf-8"))
-    suite["skills"]["mode"] = "full"
-    suite["tools"] = ["read", "write"]
-    # full eval 只有 openclaw 跑得了；runtime 本身被 FakeRuntime 顶掉，这里只是
-    # 让 suite 契约看到一份合法的 full 配置（litellm 的 model 条目必须声明 model）。
-    suite["runtime"] = "openclaw"
-    # The runtime is faked, so drop the credential axis entirely: a test that
-    # needs the developer's real .env passes on their laptop and fails on a
-    # fresh clone, which is exactly the bug this file is supposed to catch.
-    suite["models"] = [{"id": "fake-full"}]
-    full_suite = tmp_path / "full_smoke.yaml"
-    full_suite.write_text(yaml.safe_dump(suite, allow_unicode=True), encoding="utf-8")
-
+    # This must use the tracked full example exactly as a fresh clone does.
+    # A private/locally generated suite would let the public entrypoint rot.
     monkeypatch.setattr(run_routing, "build_runtime", lambda suite, cases, mock: FakeRuntime())
     monkeypatch.setattr(run_routing, "run_dir", fake_run_dir)
     monkeypatch.setattr(sys, "argv", [
         "run_routing",
-        "--suite", str(full_suite),
+        "--suite", "evals/suites/example_full.yaml",
         "--execution-id", "smoke-full-01",
     ])
     run_routing.main()

@@ -158,7 +158,7 @@ none/v1/v2 三级阶梯并定位到 V1 描述的具体缺陷。
 | N3 Matrix Builder | ⚠️ 已抽出确定性的 `model × case × repeat` 矩阵、唯一 request/session、重跑会话隔离和 10k 任务测试；skill 配置/版本/runtime 尚未在单 suite 内做多轴展开 | `workflows/matrix.py` |
 | N4 Environment Resolver | 🚧 已从 Runtime 中拆出 `EnvironmentBackend` 注册表；local 每 request 独立 workspace/skill staging，docker 固定 digest、独立容器、只读 skill mount、disabled/full 网络、CPU/内存和清理已实现并真实 smoke；mock/allowlist、输入只读挂载、OpenClaw 固定镜像仍缺 | `environments/`、`contracts/runtime.py` |
 | N5 Runtime Adapter | ✅ **Protocol + 注册表工厂**,能力校验 + healthcheck + fingerprint + 环境布置 | `adapters/runtimes/` |
-| N6 OpenClaw Execution | ✅ **已打通**(healthy=✓);routing 与 full 均实测:注入 6/6 加载、tool 真调用、产物落盘 | `adapters/runtimes/openclaw.py`、[OPENCLAW.md](OPENCLAW.md) |
+| N6 OpenClaw Execution | ✅ **已打通**(healthy=✓);routing 与 full 均实测:注入、加载、tool、产物落盘；`suite.tools` 已强制映射为 OpenClaw allow/deny policy 并自动恢复 | `adapters/runtimes/openclaw.py`、[OPENCLAW.md](OPENCLAW.md) |
 | N7 Result Normalizer | ⚠️ 统一 `RunResult`(含 `tool_calls`/`artifacts`/`resolved_model`/**`error_kind` 四类失败归属**) + JSONL + config 快照,未接 OTel | `contracts/runtime.py`、`outputs/{run}/` |
 | N8/N9 路由指标 | ✅ Exact-Set-Match/Top-1/multi/拒答率/误激活/分题型/PRF/混淆矩阵,全走 sklearn | `workflows/score_routing.py` |
 | N8/N9 full 指标 | ✅ 任务完成度/产物命中率(存在+非空+MIME)/tool 命中率/skill 加载,**全是确定性断言,零 LLM 判定**;不适用的维度记 `N/A` 不记 0 | `workflows/score_full.py` |
@@ -929,7 +929,7 @@ skills:
   enabled: []
 
 tools:
-  enabled: []
+  allowed: []  # suite.tools；空列表 = 禁止所有 tool
 
 environment:
   workspace: {}
@@ -2028,6 +2028,12 @@ Skill Metadata
 * 输出是否符合要求
 * Skill V1/V2 回归
 * Token、成本、延迟比较
+
+`suite.tools` 是运行权限，不是评分备注。OpenClaw adapter 在 agent 调用前将非空列表写入
+`tools.allow`；空列表写入 `tools.deny: ["*"]`，回读确认后才执行，并在请求结束时恢复
+原 profile。local profile 的配置交换与 agent 执行必须作为同一临界区串行化，容器模式则
+依靠逐 request 独立 profile；local 临界区同时覆盖同机线程与进程。每题
+`expect_tools` 仍只负责“应该实际调用什么”的评分。
 
 ---
 

@@ -16,7 +16,7 @@ evals/drafts/
 
 # --- 私有输入：只发一套自洽的示例，其余留在本地 ---
 # 规则：被测 skill、题集、suite、素材都是**用户私有输入**，不随 eval 平台上传。
-# 仓库只跟踪一套能在空白 clone 上跑通的示例（三个 skill + 一份题集 + 一个 suite）；
+# 仓库只跟踪 routing/full 两套能在空白 clone 上跑通的示例；
 # 你自己的实验配置照常放在这些目录里，git 不会碰。
 /subjects/*
 !/subjects/csv-profiler/
@@ -25,9 +25,11 @@ evals/drafts/
 
 evals/datasets/*
 !evals/datasets/routing_example_v1.0.jsonl
+!evals/datasets/full_example_v1.0.jsonl
 
 evals/suites/*
 !evals/suites/example_routing.yaml
+!evals/suites/example_full.yaml
 
 evals/fixtures/*
 !evals/fixtures/.gitkeep

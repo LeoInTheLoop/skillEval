@@ -75,6 +75,10 @@ class InvocationRequest(BaseModel):
     # 本次要物化进 workspace 的只读输入文件（§11.4）。编排层填**宿主机绝对路径**，
     # Environment Backend 负责复制与只读化；Runtime 只看到 workspace 里的同名文件。
     input_files: list[str] = Field(default_factory=list)
+    # Full eval 的硬 tool allowlist。编排层从 suite.tools 原样下传，Runtime 必须
+    # 在调用 agent 前执行；它不是给 prompt 看的建议，也不只是评分声明。
+    # 空列表表示本次 turn 禁止所有 tool（纯文本任务仍可运行）。
+    allowed_tools: list[str] = Field(default_factory=list)
 
     model: dict[str, Any] = Field(default_factory=dict)   # suite 里的一个 model 条目
     session_id: str | None = None                          # 多轮：同 case 内复用

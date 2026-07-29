@@ -39,9 +39,11 @@ skillEval/
 │   ├── AUTHORING.md              写题规范
 │   ├── RUNBOOK.md                本文
 │   ├── datasets/                 【问题集 + 内联答案】
-│   │   └── routing_example_v1.0.jsonl   ← 唯一已跟踪的示例，其余 git 忽略
+│   │   ├── routing_example_v1.0.jsonl   ← 已跟踪 routing 示例
+│   │   └── full_example_v1.0.jsonl      ← 已跟踪 full 示例
 │   ├── suites/                   【配置】
-│   │   └── example_routing.yaml         ← 唯一已跟踪的示例，其余 git 忽略
+│   │   ├── example_routing.yaml         ← 已跟踪 routing 示例
+│   │   └── example_full.yaml            ← 已跟踪 full 示例
 │   ├── fixtures/                 【输入素材】full eval 用（git 忽略）
 │   └── expected/                 【大件参考答案】full eval 用（git 忽略）
 ├── installed_skills/<slug>/      上游安装源目录示例（不直接评测）
@@ -65,7 +67,9 @@ skillEval/
 
 ## 2. Suite：配置长什么样
 
-见 [suites/example_routing.yaml](suites/example_routing.yaml)（仓库里唯一已跟踪的 suite）。要点：
+路由见 [suites/example_routing.yaml](suites/example_routing.yaml)，真实 agent 执行见
+[suites/example_full.yaml](suites/example_full.yaml)。两者都通过统一 `pipeline plan/run`
+入口运行。下面先看 routing 配置要点：
 
 ```yaml
 suite_id: example_routing
@@ -94,7 +98,7 @@ models:                     # ← 列表！N 个模型 = 同一套题跑 N 遍
     api_key_env: DASHSCOPE_API_KEY   # 只写变量名，值在 .env
     params: {temperature: 0}
 
-tools: []                   # routing_only 必须空；full eval 在这声明
+tools: []                   # routing_only 必须空；full 下是 runtime 强 allowlist
 
 repeats: 3
 
@@ -124,8 +128,20 @@ catalog 或 `runs.jsonl`；只改归属不应制造“实验条件变化”的�
 2. **脚本里不留可调参数。** 想改模型/重复数/门槛，改 suite，不改代码 —— 否则改动无法被 `config_hash` 捕获。
 3. **adapter 内部会影响结果的常量，必须在 `fingerprint()` 里交代。** system prompt、CLI 版本这类东西不在 suite 里，但改了就会改结果 —— 它们由 adapter 自报，一并进 `config_hash`。
 
-> 仓库只保留 `subjects/deliverable-pack/v1/SKILL.md` 作为最小 full-eval 样例。真实 skill、
-> 其版本和实际运行结果都是用户私有输入：放在 `subjects/` 供本地运行即可，不要提交。
+> 仓库保留 `subjects/deliverable-pack/v1/SKILL.md`、`full_example_v1.0.jsonl` 和
+> `example_full.yaml` 作为完整的最小 full-eval 样例。真实 skill、其版本和实际运行结果
+> 都是用户私有输入：放在相同目录结构供本地运行即可，不要提交。
+
+full suite 的 `tools` 同时进入快照和 runtime 请求，但它不是评分 gold：
+
+- `tools: [read, write]`：OpenClaw 运行前临时设置 `tools.allow`，请求后恢复；
+- `tools: []`：临时设置 `tools.deny: ["*"]`，禁止所有 tool；
+- 每题 `expect_tools`：只描述该题应观察到的调用，用于确定性评分。
+
+策略设置会回读校验，失败时拒绝执行。local profile 的“设置 → agent → 恢复”会在同机
+线程和 pipeline 进程间串行化，避免并发请求互相覆盖；Docker 每个 request 使用独立
+profile。注意允许 `exec` 就等于允许它通过 shell 产生更广的副作用，tool 名称 allowlist
+不能替代容器网络和文件系统隔离。
 
 suite 在进入 runner 前会先通过 `contracts/suite.py` 的严格契约：未知字段、字符串/数字
 类型漂移、重复 model ID、非法 gate、routing-only 配 tool、以及疑似明文 secret 都会直接

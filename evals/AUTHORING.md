@@ -181,7 +181,8 @@ outputs/routing_all_v1.0__gpt-4o__v1/        # 换模型
 
 **judge 是可换的，而且默认跟被测模型用不同的 env。** 配置见 suite 的 `scoring.judge`
 （[suites/example_routing.yaml](suites/example_routing.yaml) 有 routing 侧的完整示例；
-full eval 的 suite 指向你自己的 skill，仓库不发）。
+[suites/example_full.yaml](suites/example_full.yaml) 是可直接执行的 full 基础示例；换成
+自己的 skill 后再按业务需要增加 judge）。
 **换 judge 就是换尺子**，同一批 run 用两个 judge 判会得到两个不同的 `assertion_pass_rate`；
 两者不可直接比较，`workflows/compare_runs.py` 会报 `[⚠️ 尺子不同]`。
 

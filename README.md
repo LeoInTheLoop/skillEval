@@ -56,6 +56,28 @@ outputs/routing_example_v1.0__mock__v1/<execution-id>/
 
 mock 会显示 `QUALITY VERDICT NOT EVALUATED`。它只证明管道能跑，不能判断 skill 好坏。
 
+已经配置好 OpenClaw 后，用仓库自带的 full suite 跑真实 agent loop。它只有 2 题，
+会加载 `deliverable-pack`、调用 tool、检查产物，并自动进入 `score_full`：
+
+```bash
+source ~/.nvm/nvm.sh
+nvm use 24
+
+.venv/bin/python -m pipeline plan \
+  --suite evals/suites/example_full.yaml \
+  --healthcheck
+
+.venv/bin/python -m pipeline run \
+  --suite evals/suites/example_full.yaml \
+  --confirm \
+  --confirm-egress
+```
+
+这不是另一条隐藏 workflow：预检、执行和 full 评分都由同一个 `pipeline plan/run` 入口选择。
+完整 suite 与 dataset 分别在
+[`evals/suites/example_full.yaml`](evals/suites/example_full.yaml) 和
+[`evals/datasets/full_example_v1.0.jsonl`](evals/datasets/full_example_v1.0.jsonl)。
+
 运行项目测试：
 
 ```bash
@@ -95,7 +117,7 @@ mock 会显示 `QUALITY VERDICT NOT EVALUATED`。它只证明管道能跑，不�
 
 ---
 
-## 实测教程：拿一个公开 skill 跑 full eval
+## 换成第三方 skill 跑 full eval
 
 下面是从全新 clone 验证过的最小路径。示例使用公开的
 [blader/humanizer](https://github.com/blader/humanizer)；它是纯 Markdown skill，
@@ -419,9 +441,20 @@ skills:
 优先使用 `include` 明确 catalog，避免以后新增本地 skill 时实验集合漂移。
 `target` 是归属，不等于候选集合。No-Skill 基线仍保留 `target`，但从 `include` 中移除目标。
 
-suite 顶层 `tools` 当前用于记录实验声明，并让 `expect_tools` 做确定性评分；它不是 local
-OpenClaw profile 的强权限白名单。OpenClaw 仍可能使用 profile 中启用的其他 tool。
-需要权限隔离时，应另外收紧 OpenClaw profile，并使用 Docker environment 的网络与资源策略。
+suite 顶层 `tools` 是 full eval 的运行时强 allowlist。例如 `tools: [read, write]` 会在调用
+agent 前临时写入 OpenClaw `tools.allow`，该请求结束后恢复 profile 原值；`tools: []`
+会临时写入 `tools.deny: ["*"]`，即禁止所有 tool。写入、回读校验或恢复失败都会让该次
+运行失败关闭，不会在权限未落实时继续。同一台机器上共享 local profile 的线程和
+pipeline 进程也会使用同一把文件锁，避免临时策略互相覆盖。
+
+它与 case 的 `expect_tools` 分工不同：
+
+- suite `tools`：允许 agent 使用什么，是执行权限；
+- case `expect_tools`：这道题应该实际调用什么，是评分 gold。
+
+OpenClaw profile 中原有的更严格 deny 仍然生效，suite 不会放宽它。allowlist 限制的是
+tool 名称，不是 tool 的副作用：如果允许 `exec`，agent 仍可能通过 shell 读写文件或访问网络。
+不可信 skill 还应使用 Docker environment 的网络、挂载和资源策略。
 
 ---
 
@@ -515,7 +548,7 @@ skills:
 
 ## 隐私、安全与可复现性
 
-仓库只跟踪一套合成示例。以下内容默认被 `.gitignore` 排除：
+仓库只跟踪 routing 和 full 两套合成示例。以下内容默认被 `.gitignore` 排除：
 
 - `.env` 和本地模型额度记录；
 - `installed_skills/` 与非示例 `subjects/`；
@@ -540,7 +573,8 @@ git grep --cached -n -I -E \
 - full eval 会发送题目、所选 `SKILL.md` 正文和 tool catalog；
 - API key 值不进入 suite、快照、报告或模型 payload；
 - 第三方 skill 可能包含脚本和提示注入，导入前必须人工审查；
-- suite 的 `tools` 不是 local OpenClaw 的权限边界，不能代替 runtime tool policy；
+- suite 的 `tools` 会强制映射为 local OpenClaw tool policy，并在请求后恢复；
+- 允许 `exec` 等广义 tool 仍会带来间接文件/网络能力，tool policy 不等于系统沙箱；
 - local environment 是独立 workspace，但不是强安全沙箱；运行不可信 skill 时使用 Docker backend。
 
 `config_hash` 包含会影响结果的 suite 字段、dataset hash、skill hash、模型参数、
@@ -593,7 +627,7 @@ tests/                      回归与契约测试
 | 能力 | 状态 |
 | --- | --- |
 | Routing eval、No-Skill、multi-skill、生产上下文 | ✅ |
-| OpenClaw full eval、tool/artifact、错误分类 | ✅ |
+| OpenClaw full eval、tool/artifact、错误分类、suite tool 强 allowlist | ✅ |
 | 多轮、session/context/file 延续、conversation 并发 | ✅ |
 | V1/V2 delta、污染检测、版本不可变检查 | ✅ |
 | 自动生成 routing 草稿 + 人工审核门 | ✅ |

@@ -1,0 +1,35 @@
+# Fresh-clone full-eval example. Requires an already configured OpenClaw
+# `skilleval` profile; all execution and scoring goes through `pipeline`.
+suite_id: example_full
+suite_version: "1.0"
+description: Bundled deliverable-pack two-case full-eval smoke test
+
+dataset: evals/datasets/full_example_v1.0.jsonl
+
+runtime: openclaw
+runtime_options:
+  bin: openclaw
+  profile: skilleval
+
+skills:
+  dir: subjects
+  target: [deliverable-pack]
+  include: [deliverable-pack]
+  mode: full
+  cfg: v1
+
+models:
+  - id: openclaw-default
+
+# Hard OpenClaw allowlist, not scoring-only metadata.
+tools: [read, write]
+repeats: 1
+parallelism: 1
+timeout_seconds: 600
+
+scoring:
+  metrics: [task_completion, artifact_hit, tool_hit]
+  gate:
+    task_completion: ">= 1.0"
+    artifact_hit: ">= 1.0"
+    tool_hit: ">= 1.0"

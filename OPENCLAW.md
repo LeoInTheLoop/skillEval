@@ -29,13 +29,14 @@ QWEN_API_KEY="$DASHSCOPE_API_KEY" \
     --auth-choice qwen-standard-api-key \
     --skip-health
 
-# ⑤ 验证（不需要先写 suite —— 这问的是「机器装好没有」，跟实验无关）
-.venv/bin/python -m workflows.run_routing --healthcheck \
-    --runtime openclaw --runtime-option profile=skilleval
-# 期望：runtime=openclaw version=OpenClaw 2026.7.1-2 healthy=✓
+# ⑤ 用仓库自带 full suite 走统一入口预检
+.venv/bin/python -m pipeline plan \
+    --suite evals/suites/example_full.yaml --healthcheck
+# 期望：runtime=openclaw version=OpenClaw 2026.7.1-2 healthy=✓，2 requests
 ```
 
-`--runtime` 只在 `--healthcheck` 下有效，永远不会进 `config_hash` 或参与评分。
+`pipeline plan --healthcheck` 仍然不发模型请求：OpenClaw 侧只检查 CLI 版本和
+`config validate`，provider 鉴权、模型 ID 与额度留到确认后的 `pipeline run` 验证。
 探不通时它会直接告诉你缺什么 —— 比如 node 版本不对，它会把该用哪个 node 打出来：
 
 ```text
@@ -45,12 +46,17 @@ runtime=openclaw version=? healthy=✗
     node_bin: /…/node/v24.18.0/bin/node
 ```
 
-照它说的补一个参数再探一次即可：
+照它说的在你自己的 suite 的 `runtime_options` 里补 `node_bin`，再用同一入口预检。
+仓库示例不写机器相关绝对路径：
 
 ```bash
-.venv/bin/python -m workflows.run_routing --healthcheck --runtime openclaw \
-    --runtime-option profile=skilleval \
-    --runtime-option node_bin=$(dirname $(command -v node))/node
+cp evals/suites/example_full.yaml evals/suites/full_local.yaml
+# 编辑 full_local.yaml:
+# runtime_options:
+#   profile: skilleval
+#   node_bin: /你的/node/v24/bin/node
+.venv/bin/python -m pipeline plan \
+    --suite evals/suites/full_local.yaml --healthcheck
 ```
 
 如果 healthcheck 报 `unable to open database file`，先别急着重装。2026 年 7 月 28 日的
@@ -164,6 +170,23 @@ suite 里声明一次即可，adapter 会带上：
 runtime_options:
   profile: skilleval
 ```
+
+### 3.1 suite tool 权限
+
+full suite 的顶层 `tools` 是 OpenClaw 运行时强 allowlist，不只是实验说明：
+
+```yaml
+tools: [read, write]
+```
+
+adapter 会在每个请求前临时设置 `tools.allow`，回读确认后才调用 agent，并在结束后恢复
+profile 原值。空列表会设置 `tools.deny: ["*"]`。local profile 的整个“设置 → agent →
+恢复”区间会在同机线程和 pipeline 进程间串行化，防止并发请求互相覆盖；容器请求各自
+使用独立 profile。
+
+OpenClaw 原有的 `tools.deny` 仍优先，suite 只会进一步收紧，不会绕过 profile 限制。
+`exec` 这类 tool 本身权限很广：允许它后仍可能经 shell 读写或联网，所以不可信 skill
+还需要 Docker 的文件系统和网络隔离。
 
 **推倒重来**（配崩了最快的修法）：
 
@@ -342,8 +365,8 @@ openclaw --profile skilleval agent --local --json \
   --session-id smoke --message "只回 OK"
 
 # ④ skillEval 能接上
-.venv/bin/python -m workflows.run_routing --healthcheck \
-    --runtime openclaw --runtime-option profile=skilleval
+.venv/bin/python -m pipeline plan \
+    --suite evals/suites/example_full.yaml --healthcheck
 ```
 
 ③ 通了但 ④ 不通 → 问题在 adapter 或 PATH 继承（§2 坑 C），不在 OpenClaw。
@@ -444,7 +467,7 @@ openclaw --help | grep -q profile && echo "✓ --profile" || echo "✗ --profile
 | provider | `qwen`（`@openclaw/qwen-provider`），Standard/Global 端点 |
 | 默认模型 | `qwen/qwen3.5-plus` |
 | 可用模型 | `qwen/qwen3.6-plus`、`qwen/qwen3-max-2026-01-23`、`qwen/glm-5`、`qwen/glm-4.7`、`qwen/kimi-k2.5` 等 |
-| suite | 自己写一份 `runtime: openclaw` 的（仓库只发 litellm 的示例 suite） |
+| suite | `evals/suites/example_full.yaml`（完整 dataset + subject + tool policy） |
 
 改 OpenClaw 侧用哪个模型：
 

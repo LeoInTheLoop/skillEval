@@ -1,0 +1,4 @@
+# Tracked full-eval smoke set for the bundled deliverable-pack skill.
+# review_status: APPROVED — deterministic artifact/tool checks only
+{"id":"example-full-pos-01","prompt":"Q3 三个大区销售额：北区 1203 万，南区 954 万，西区 881 万。请生成交付包，短名用 q3-sales。","expected_skills":["deliverable-pack"],"expect_artifacts":["out/q3-sales.csv","out/q3-sales.md"],"expect_tools":["write"],"tags":["full","positive","artifact"],"severity":"high"}
+{"id":"example-full-rej-01","prompt":"北区 1203 万、南区 954 万，哪个高？只回答地区名，不要创建文件。","expected_skills":[],"expect_artifacts":[],"expect_tools":[],"forbid_artifacts":true,"tags":["full","rejection"],"severity":"medium"}

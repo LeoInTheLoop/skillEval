@@ -25,6 +25,8 @@ from contextlib import contextmanager, nullcontext
 from pathlib import Path
 from typing import Iterator
 
+from filelock import FileLock
+
 from contracts import (
     TEXT_EXCERPT_LIMIT,
     Artifact,
@@ -56,6 +58,10 @@ _EXTRA_DIRS = "skills.load.extraDirs"
 _WORKSPACE = "agents.defaults.workspace"
 # 主模型。容器每次都是全新 profile，不显式设就会落到镜像默认模型上
 _MODEL = "agents.defaults.model.primary"
+# suite.tools 必须成为 OpenClaw 的硬权限边界，而不是只用于事后评分。
+_TOOLS_ALLOW = "tools.allow"
+_TOOLS_DENY = "tools.deny"
+_TOOL_POLICY_VERSION = "suite-tools-v1"
 
 # OpenClaw 把上游 API 的失败转述到 stderr，退出码一律非 0 —— 只看退出码分不出
 # 「CLI 自己挂了」和「模型服务连不上」。靠这些词把后者拨回 network。
@@ -126,6 +132,18 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
         )
         self._bootstrapped_containers: set[str] = set()
         self._bootstrap_lock = threading.Lock()
+        # local OpenClaw 的 profile 配置是进程间共享文件。prepared() 会临时改
+        # tools/workspace/extraDirs；必须把「改 → run → 还原」整段跨线程、跨进程
+        # 串行化，否则请求 A 可能在请求 B 运行中途恢复掉它的 allowlist。
+        # 容器模式每个 request 有独立 profile，不走这些锁。
+        self._local_profile_lock = threading.RLock()
+        profile_lock_id = hashlib.sha256(
+            f"{self.bin}\0{self.profile or '__default__'}".encode("utf-8")
+        ).hexdigest()[:16]
+        self._local_profile_file_lock = FileLock(
+            str(Path(tempfile.gettempdir()) /
+                f"skilleval-openclaw-profile-{profile_lock_id}.lock")
+        )
         self.version = self._probe_version()
 
     # ---- 内部 ----
@@ -327,6 +345,18 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
             return None
         return out
 
+    def _write_config_checked(
+        self, request: InvocationRequest, action: str, key: str, value: str | None = None
+    ) -> None:
+        args = [action, key] if value is None else [action, key, value]
+        result = self._config(request, *args)
+        if result.returncode != 0:
+            detail = (result.stderr or result.stdout or "").strip()[-500:]
+            raise RuntimeError(
+                f"OpenClaw 配置 {action} {key} 失败；"
+                f"拒绝在未落实权限/隔离配置时继续：{detail}"
+            )
+
     @staticmethod
     def _in_container(request: InvocationRequest) -> bool:
         return bool(request.environment and request.environment.container_id)
@@ -387,14 +417,59 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
         恢复原值而不是无脑 unset —— 用户本来可能就配了，吃掉别人的配置很难查。
         """
         previous = self._read_config(request, key)
-        self._config(request, "set", key, value)
+        self._write_config_checked(request, "set", key, value)
         try:
             yield
         finally:
             if previous is not None:
-                self._config(request, "set", key, previous)
+                self._write_config_checked(request, "set", key, previous)
             else:
-                self._config(request, "unset", key)
+                self._write_config_checked(request, "unset", key)
+
+    @contextmanager
+    def _swapped_json_array(
+        self, request: InvocationRequest, key: str, values: list[str]
+    ) -> Iterator[None]:
+        """Fail closed while applying one security-critical OpenClaw list setting."""
+        previous = self._read_config(request, key)
+        self._write_config_checked(request, "set", key, json.dumps(values))
+        try:
+            observed = self._read_config(request, key)
+            try:
+                parsed = json.loads(observed) if observed is not None else None
+            except json.JSONDecodeError as error:
+                raise RuntimeError(
+                    f"OpenClaw 写入 {key} 后返回了不可解析的值：{observed!r}"
+                ) from error
+            if parsed != values:
+                raise RuntimeError(
+                    f"OpenClaw 未落实 {key}：期望 {values!r}，实际 {parsed!r}"
+                )
+            yield
+        finally:
+            if previous is not None:
+                self._write_config_checked(request, "set", key, previous)
+            else:
+                self._write_config_checked(request, "unset", key)
+
+    def _tool_policy(self, request: InvocationRequest):
+        """Turn suite.tools into an enforced OpenClaw policy for this turn."""
+        if request.allowed_tools:
+            return self._swapped_json_array(
+                request, _TOOLS_ALLOW, request.allowed_tools
+            )
+        # OpenClaw treats an omitted/empty allowlist as permissive. A wildcard
+        # deny is the explicit text-only posture and still permits a final reply.
+        return self._swapped_json_array(request, _TOOLS_DENY, ["*"])
+
+    @contextmanager
+    def _local_profile_guard(self, request: InvocationRequest) -> Iterator[None]:
+        """Serialize temporary profile mutations across threads and processes."""
+        with self._local_profile_lock:
+            with self._local_profile_file_lock.acquire(
+                timeout=request.timeout_seconds
+            ):
+                yield
 
     @contextmanager
     def prepared(self, request: InvocationRequest) -> Iterator[None]:
@@ -422,42 +497,50 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
         if self._in_container(request):
             self._bootstrap_container(request)
 
-        if request.skill_mode != "full":
-            yield
-            return
+        profile_guard = (
+            nullcontext() if self._in_container(request)
+            else self._local_profile_guard(request)
+        )
+        with profile_guard:
+            tool_policy = self._tool_policy(request)
 
-        if request.environment is not None:
-            # workspace/skill staging 的创建与清理由 Environment Backend 负责；
-            # adapter 只把 runtime 路径写进 OpenClaw 配置。
-            skill_dirs = request.environment.runtime_skill_dirs
-            workspace = request.environment.runtime_workspace
-            if not workspace:
-                raise ValueError("prepared environment 缺 runtime_workspace")
-            extra = self._swapped(request, _EXTRA_DIRS, json.dumps(skill_dirs)) \
-                if skill_dirs else nullcontext()
-            with extra, self._swapped(request, _WORKSPACE, workspace):
-                yield
-            return
+            if request.skill_mode != "full":
+                with tool_policy:
+                    yield
+                return
 
-        staging = Path(tempfile.mkdtemp(prefix="skilleval-skills-"))
-        # ponytail: workspace 跑完即删，RunResult 留产物元数据 + 文本内容前缀
-        # （`Artifact.text_excerpt`，judge 判"内容对不对"就靠它）。二进制产物和超过
-        # TEXT_EXCERPT_LIMIT 的部分仍然看不到；真要留全档，按 AUTHORING.md §1.4 拷到
-        # outputs/{run}/artifacts/{run_id}/ —— 等 P7 Viewer 真的要展示它们时再做。
-        workspace = Path(tempfile.mkdtemp(prefix="skilleval-ws-"))
-        try:
-            for s in request.skills:
-                src = Path(s.source_path).parent
-                if src.is_dir():
-                    shutil.copytree(src, staging / s.skill_id, symlinks=False)
-            # skills 为空（none 基线）时不设 extraDirs，让 catalog 干干净净
-            extra = self._swapped(request, _EXTRA_DIRS, json.dumps([str(staging)])) \
-                if request.skills else nullcontext()
-            with extra, self._swapped(request, _WORKSPACE, str(workspace)):
-                yield
-        finally:
-            shutil.rmtree(staging, ignore_errors=True)
-            shutil.rmtree(workspace, ignore_errors=True)
+            if request.environment is not None:
+                # workspace/skill staging 的创建与清理由 Environment Backend 负责；
+                # adapter 只把 runtime 路径写进 OpenClaw 配置。
+                skill_dirs = request.environment.runtime_skill_dirs
+                workspace = request.environment.runtime_workspace
+                if not workspace:
+                    raise ValueError("prepared environment 缺 runtime_workspace")
+                extra = self._swapped(request, _EXTRA_DIRS, json.dumps(skill_dirs)) \
+                    if skill_dirs else nullcontext()
+                with tool_policy, extra, self._swapped(request, _WORKSPACE, workspace):
+                    yield
+                return
+
+            staging = Path(tempfile.mkdtemp(prefix="skilleval-skills-"))
+            # ponytail: workspace 跑完即删，RunResult 留产物元数据 + 文本内容前缀
+            # （`Artifact.text_excerpt`，judge 判"内容对不对"就靠它）。二进制产物和超过
+            # TEXT_EXCERPT_LIMIT 的部分仍然看不到；真要留全档，按 AUTHORING.md §1.4 拷到
+            # outputs/{run}/artifacts/{run_id}/ —— 等 P7 Viewer 真的要展示它们时再做。
+            workspace = Path(tempfile.mkdtemp(prefix="skilleval-ws-"))
+            try:
+                for s in request.skills:
+                    src = Path(s.source_path).parent
+                    if src.is_dir():
+                        shutil.copytree(src, staging / s.skill_id, symlinks=False)
+                # skills 为空（none 基线）时不设 extraDirs，让 catalog 干干净净
+                extra = self._swapped(request, _EXTRA_DIRS, json.dumps([str(staging)])) \
+                    if request.skills else nullcontext()
+                with tool_policy, extra, self._swapped(request, _WORKSPACE, str(workspace)):
+                    yield
+            finally:
+                shutil.rmtree(staging, ignore_errors=True)
+                shutil.rmtree(workspace, ignore_errors=True)
 
     # ---- Protocol ----
 
@@ -523,11 +606,10 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
         )
 
     def _healthcheck_container(self, environment) -> RuntimeHealth:
-        """在真容器里探一遍：起容器 → onboard → 跑一次 agent。
+        """在真容器里检查 CLI、onboard 与配置，但不发送模型请求。
 
-        探针必须走完和真实 run 一样的路径。只探「镜像里有没有 openclaw」是没用的 ——
-        HANDOFF §5 那条教训（healthcheck 过了不等于跑得动）在容器上同样成立，
-        容器里最容易挂的恰恰是凭据没进来。
+        `pipeline plan --healthcheck` 承诺不外发 eval 数据，因此这里只能验证运行前置；
+        provider 鉴权、模型 ID 和额度要等用户确认后的真实 run 才能验证。
         """
         probe = InvocationRequest(
             request_id="healthcheck", case_id="skilleval-health", repeat_index=0,
@@ -536,20 +618,17 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
         try:
             with environment.prepared(probe) as prepared:
                 self._bootstrap_container(prepared)
-                p = subprocess.run(
-                    self._base_cmd(prepared) + ["agent", "--local", "--json",
-                                                "--session-id", "skilleval-health",
-                                                "--message", "ping"],
-                    capture_output=True, text=True, timeout=300, env=self._env())
+                p = self._config(prepared, "validate")
         except Exception as exc:  # noqa: BLE001 — healthcheck 只报告，不外抛
             return RuntimeHealth(healthy=False, runtime=self.name, version=self.version,
                                  detail=f"容器内探针失败：{exc}")
         if p.returncode != 0:
             return RuntimeHealth(
                 healthy=False, runtime=self.name, version=self.version,
-                detail=f"容器内 agent 调用失败：{(p.stderr or '').strip()[-300:]}")
+                detail=f"容器内 config validate 失败："
+                       f"{(p.stderr or p.stdout or '').strip()[-300:]}")
         return RuntimeHealth(healthy=True, runtime=self.name, version=self.version,
-                             detail=f"容器内探通（model={self.model or '镜像默认'}）")
+                             detail="容器内 CLI/onboard/config 均可用；未发送模型请求")
 
     def _install_hint(self) -> str:
         """先自查再建议（AGENTS.md §29.28）。
@@ -584,25 +663,19 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
                        "或 nvm use 到合规版本")
         try:
             probe = subprocess.run(
-                self._base_cmd() + ["agent", "--local", "--json",
-                                    "--session-id", "skilleval-health", "--message", "ping"],
-                capture_output=True, text=True, timeout=180, env=self._env())
+                self._base_cmd() + ["config", "validate"],
+                capture_output=True, text=True, timeout=60, env=self._env())
         except subprocess.TimeoutExpired:
             return RuntimeHealth(healthy=False, runtime=self.name, version=self.version,
-                                 detail="openclaw agent 调用超时（>180s）")
+                                 detail="openclaw config validate 超时（>60s）")
         if probe.returncode != 0:
-            err = probe.stderr.strip()
-            hint = ""
-            # 2026.2.x 用 auth-profiles.json，2026.7.x 换成 openclaw-agent.sqlite
-            # 并加了 missing-provider-auth 标记 —— 两代都认
-            if any(k in err for k in ("No API key found", "auth-profiles",
-                                      "missing-provider-auth", "Configure auth")):
-                p = f" --profile {self.profile}" if self.profile else ""
-                hint = ("；OpenClaw 用自己的 auth store，不读环境变量里的 key，"
-                        f"且配置需要 TTY。在终端里跑一次：openclaw{p} configure")
+            err = (probe.stderr or probe.stdout or "").strip()
             return RuntimeHealth(healthy=False, runtime=self.name, version=self.version,
-                                 detail=f"agent 调用失败：{err[-300:]}{hint}")
-        return RuntimeHealth(healthy=True, runtime=self.name, version=self.version)
+                                 detail=f"config validate 失败：{err[-300:]}")
+        return RuntimeHealth(
+            healthy=True, runtime=self.name, version=self.version,
+            detail="CLI/config 可用；未发送模型请求，provider 鉴权与模型可用性留到 run 验证",
+        )
 
     def capabilities(self) -> RuntimeCapabilities:
         # OpenClaw 自带 agent loop / skill 发现 / tool / session / workspace（§4.1）
@@ -617,6 +690,7 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
         return {"routing_input": self.routing_input.fingerprint(),
                 "openclaw_version": self.version,
                 "agent": self.agent, "profile": self.profile,
+                "tool_policy": _TOOL_POLICY_VERSION,
                 # 容器模式下 model 是本 adapter 显式设的，进指纹才能跨 run 归因；
                 # 本机模式留 None，实际模型仍要看 RunResult.resolved_model
                 "model": self.model, "auth_choice": self.auth_choice}

@@ -9,4 +9,5 @@ pandas
 litellm          # 仅真实模型调用需要；--mock 不需要
 pyyaml           # suite 配置
 docker>=7        # 只是 Docker 的 Python SDK；不用 docker 环境的话装了也不碍事
+filelock>=3      # local OpenClaw profile 的跨进程配置临界区
 pytest           # 跑 tests/ 用；不跑测试可以不装

@@ -232,7 +232,7 @@ class RoutingSuite(_StrictModel):
     environment: SuiteEnvironmentSpec = Field(default_factory=SuiteEnvironmentSpec)
     skills: SuiteSkillSpec
     models: list[SuiteModelSpec] = Field(min_length=1)
-    tools: list[str] = Field(default_factory=list)
+    tools: list[Annotated[str, Field(min_length=1)]] = Field(default_factory=list)
 
     repeats: int = Field(default=3, ge=1)
     # 并发单位是独立 conversation（model × case × repeat）；同一 conversation
