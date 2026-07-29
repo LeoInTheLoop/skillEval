@@ -28,6 +28,7 @@ from contracts import (
     format_suite_validation_error,
     load_cases,
     load_suite,
+    resolve_suite_references,
 )
 from workflows.matrix import build_matrix
 from workflows.diagnostics import gate_coverage_warnings
@@ -384,9 +385,11 @@ def build_plan(
     raw_path = Path(suite_path)
     path = raw_path if raw_path.is_absolute() else ROOT / raw_path
     try:
-        suite = load_suite(path).canonical_dict()
+        suite = resolve_suite_references(load_suite(path))
     except ValidationError as error:
         raise SystemExit(format_suite_validation_error(path, error)) from error
+    except ValueError as error:
+        raise SystemExit(f"suite 环境引用无效：{error}") from error
     dataset_path = ROOT / suite["dataset"]
     cases = load_cases(dataset_path)
     skills = resolve_skills(suite)

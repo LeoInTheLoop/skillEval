@@ -51,6 +51,7 @@ from .suite import (
     SuiteSkillSpec,
     format_suite_validation_error,
     load_suite,
+    resolve_suite_references,
 )
 
 # 骨架期的名字，保留别名以免旧脚本/测试断掉
@@ -100,6 +101,7 @@ __all__ = [
     "load_skills",
     "version_order",
     "load_suite",
+    "resolve_suite_references",
     "require_approved_dataset",
     "validate_case_set",
 ]

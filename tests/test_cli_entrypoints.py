@@ -294,7 +294,9 @@ def test_run_routing_main_full模式提示_score_full(tmp_path, monkeypatch, cap
 
     # This must use the tracked full example exactly as a fresh clone does.
     # A private/locally generated suite would let the public entrypoint rot.
+    monkeypatch.setenv("SKILLEVAL_OPENCLAW_IMAGE", "sha256:" + "a" * 64)
     monkeypatch.setattr(run_routing, "build_runtime", lambda suite, cases, mock: FakeRuntime())
+    monkeypatch.setattr(run_routing, "build_environment", lambda suite: run_routing.create_environment("local"))
     monkeypatch.setattr(run_routing, "run_dir", fake_run_dir)
     monkeypatch.setattr(sys, "argv", [
         "run_routing",

@@ -8,7 +8,12 @@ import yaml
 from pydantic import ValidationError
 
 from adapters.runtimes.mock import MockRuntimeAdapter
-from contracts import InvocationRequest, RoutingSuite, load_suite
+from contracts import (
+    InvocationRequest,
+    RoutingSuite,
+    load_suite,
+    resolve_suite_references,
+)
 from workflows.run_routing import config_hash, resolve_skills
 
 
@@ -159,6 +164,53 @@ def test_env引用必须是合法环境变量名():
     data["models"][0]["api_key_env"] = "not a variable"
     with pytest.raises(ValidationError):
         RoutingSuite.model_validate(data)
+
+
+def test_docker_image_env解析为固定镜像并进入实际配置(monkeypatch):
+    data = _valid_suite()
+    data["runtime"] = "openclaw"
+    data["skills"]["mode"] = "full"
+    data["environment"] = {
+        "backend": "docker",
+        "image_env": "SKILLEVAL_TEST_IMAGE",
+    }
+    suite = RoutingSuite.model_validate(data)
+
+    with pytest.raises(ValueError, match="SKILLEVAL_TEST_IMAGE 未设置"):
+        resolve_suite_references(suite)
+
+    monkeypatch.setenv("SKILLEVAL_TEST_IMAGE", "latest")
+    with pytest.raises(ValueError, match="固定 image"):
+        resolve_suite_references(suite)
+
+    pinned = "sha256:" + "a" * 64
+    monkeypatch.setenv("SKILLEVAL_TEST_IMAGE", pinned)
+    resolved = resolve_suite_references(suite)
+    assert resolved["environment"]["image_env"] == "SKILLEVAL_TEST_IMAGE"
+    assert resolved["environment"]["image"] == pinned
+
+    monkeypatch.setenv("SKILLEVAL_TEST_IMAGE", "sha256:" + "b" * 64)
+    second = resolve_suite_references(suite)
+    assert config_hash(resolved) != config_hash(second)
+
+
+def test_docker_image与image_env不能同时声明():
+    data = _valid_suite()
+    data["environment"] = {
+        "backend": "docker",
+        "image": "sha256:" + "a" * 64,
+        "image_env": "SKILLEVAL_TEST_IMAGE",
+    }
+    with pytest.raises(ValidationError, match="只能声明 image 或 image_env"):
+        RoutingSuite.model_validate(data)
+
+
+def test_跟踪的full示例默认Docker且开放完整toolset(monkeypatch):
+    monkeypatch.setenv("SKILLEVAL_OPENCLAW_IMAGE", "sha256:" + "b" * 64)
+    suite = resolve_suite_references(load_suite("evals/suites/example_full.yaml"))
+    assert suite["environment"]["backend"] == "docker"
+    assert suite["environment"]["image"] == "sha256:" + "b" * 64
+    assert suite["tools"] == ["*"]
 
 
 def test_canonical_config_补默认值且相同语义_hash稳定():

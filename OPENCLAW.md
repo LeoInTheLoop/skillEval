@@ -29,10 +29,10 @@ QWEN_API_KEY="$DASHSCOPE_API_KEY" \
     --auth-choice qwen-standard-api-key \
     --skip-health
 
-# ⑤ 用仓库自带 full suite 走统一入口预检
-.venv/bin/python -m pipeline plan \
-    --suite evals/suites/example_full.yaml --healthcheck
-# 期望：runtime=openclaw version=OpenClaw 2026.7.1-2 healthy=✓，2 requests
+# ⑤ 本机 OpenClaw 验证（仓库默认 full suite 走 Docker，见 §4.4）
+openclaw --profile skilleval config validate
+openclaw --profile skilleval agent --local --json \
+  --session-id skilleval-smoke --message "只回复 OK"
 ```
 
 `pipeline plan --healthcheck` 仍然不发模型请求：OpenClaw 侧只检查 CLI 版本和
@@ -46,18 +46,8 @@ runtime=openclaw version=? healthy=✗
     node_bin: /…/node/v24.18.0/bin/node
 ```
 
-照它说的在你自己的 suite 的 `runtime_options` 里补 `node_bin`，再用同一入口预检。
-仓库示例不写机器相关绝对路径：
-
-```bash
-cp evals/suites/example_full.yaml evals/suites/full_local.yaml
-# 编辑 full_local.yaml:
-# runtime_options:
-#   profile: skilleval
-#   node_bin: /你的/node/v24/bin/node
-.venv/bin/python -m pipeline plan \
-    --suite evals/suites/full_local.yaml --healthcheck
-```
+`node_bin` 只用于 `environment.backend: local` 的自定义 suite；仓库默认 Docker suite
+在镜像内固定 Node 版本，不读取宿主机这个路径。
 
 如果 healthcheck 报 `unable to open database file`，先别急着重装。2026 年 7 月 28 日的
 本地验证里，这更常见的原因是**当前执行环境不允许 OpenClaw 写 profile/db**。先换到允许
@@ -255,21 +245,24 @@ docker build -f environments/openclaw.Dockerfile -t skilleval-openclaw .
 docker image inspect skilleval-openclaw --format '{{.Id}}'   # 贴进 suite 的 environment.image
 ```
 
-镜像 ID 是**本机内容寻址**的，别人 build 出来的不一样 —— 所以仓库里的示例 suite
-不钉任何 image，要走容器就在自己那份 suite 里补上 `environment:`：
-
-```yaml
-environment:
-  backend: docker
-  image: sha256:<把上面 inspect 打印的 ID 贴这儿>   # 必须是 ID，不能用浮动 tag
-  # network 不写就是 full（默认给网络）—— 容器里的 agent 要调模型 API。
-  # 只有测「断网时 skill 会不会退化」这类题才显式写 network: disabled。
-```
+镜像 ID 是**本机内容寻址**的，别人 build 出来的不一样。仓库示例用 `image_env` 引用
+本机固定 ID：suite 不提交机器相关值，但 plan/run 解析后会把真实 ID 放进快照和
+`config_hash`。
 
 ```bash
-.venv/bin/python -m pipeline plan --suite evals/suites/<你的>.yaml --healthcheck
-# 期望：environment=healthy; runtime=healthy (容器内探通)
+export SKILLEVAL_OPENCLAW_IMAGE="$(
+  docker image inspect skilleval-openclaw --format '{{.Id}}'
+)"
+
+.venv/bin/python -m pipeline plan \
+  --suite evals/suites/example_full.yaml --healthcheck
+.venv/bin/python -m pipeline run \
+  --suite evals/suites/example_full.yaml --confirm --confirm-egress
 ```
+
+示例的 `tools: ["*"]` 是有意的：完整 toolset 在容器内运行；安全边界由逐请求容器、
+读写分离 mount、独立 workspace、CPU/内存和网络模式提供。若改成 local environment，
+不要照搬全开配置。
 
 ### 坑：onboard 不能放进 Dockerfile
 
@@ -467,7 +460,7 @@ openclaw --help | grep -q profile && echo "✓ --profile" || echo "✗ --profile
 | provider | `qwen`（`@openclaw/qwen-provider`），Standard/Global 端点 |
 | 默认模型 | `qwen/qwen3.5-plus` |
 | 可用模型 | `qwen/qwen3.6-plus`、`qwen/qwen3-max-2026-01-23`、`qwen/glm-5`、`qwen/glm-4.7`、`qwen/kimi-k2.5` 等 |
-| suite | `evals/suites/example_full.yaml`（完整 dataset + subject + tool policy） |
+| suite | `evals/suites/example_full.yaml`（Docker + 完整 toolset） |
 
 改 OpenClaw 侧用哪个模型：
 

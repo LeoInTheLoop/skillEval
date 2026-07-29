@@ -5,6 +5,7 @@ YAML 只是存储格式；进入执行层前必须先变成这个契约。这样
 """
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 from typing import Annotated, Any, Literal
@@ -91,6 +92,9 @@ class SuiteEnvironmentSpec(_StrictModel):
 
     backend: str = Field(default="local", min_length=1)
     image: str | None = None
+    # 可执行的公共 Docker suite 不能提交某台开发机的本地 image ID。允许 suite
+    # 引用一个环境变量；plan/run 会先解析成固定 sha256 ID，再进入 config hash。
+    image_env: str | None = Field(default=None, pattern=_ENV_NAME)
     network: NetworkMode = "full"
     cpus: float | None = Field(default=None, gt=0)
     memory: str | None = None
@@ -105,14 +109,18 @@ class SuiteEnvironmentSpec(_StrictModel):
     @model_validator(mode="after")
     def _docker_image_is_reproducible(self) -> "SuiteEnvironmentSpec":
         if self.backend == "docker":
-            if not self.image:
-                raise ValueError("docker environment 必须声明 image")
-            if not PINNED_IMAGE.search(self.image):
+            if bool(self.image) == bool(self.image_env):
+                raise ValueError(
+                    "docker environment 必须且只能声明 image 或 image_env 其中一个"
+                )
+            if self.image and not PINNED_IMAGE.search(self.image):
                 raise ValueError(
                     "docker image 必须按内容寻址固定："
                     "registry 镜像写 name@sha256:<64位>，本地 build 的写 image ID "
                     "（docker image inspect --format '{{.Id}}'）"
                 )
+        elif self.image_env:
+            raise ValueError("image_env 只用于 docker environment")
         return self
 
 
@@ -271,6 +279,27 @@ def load_suite(path: str | Path) -> RoutingSuite:
     """读取并严格校验 YAML。空文件/非 mapping 也交给 Pydantic 结构化报错。"""
     data = yaml.safe_load(Path(path).read_text(encoding="utf-8"))
     return RoutingSuite.model_validate(data)
+
+
+def resolve_suite_references(suite: RoutingSuite) -> dict[str, Any]:
+    """Resolve non-secret environment references before planning and hashing."""
+    data = suite.canonical_dict()
+    environment = data["environment"]
+    image_env = environment.get("image_env")
+    if environment.get("backend") == "docker" and image_env:
+        image = (os.environ.get(image_env) or "").strip()
+        if not image:
+            raise ValueError(
+                f"docker image 环境变量 {image_env} 未设置；先 build 镜像并把固定 "
+                "sha256 ID 写入该变量"
+            )
+        if not PINNED_IMAGE.search(image):
+            raise ValueError(
+                f"{image_env} 必须是固定 image：name@sha256:<64位> 或本地 "
+                "sha256:<64位> image ID"
+            )
+        environment["image"] = image
+    return data
 
 
 def format_suite_validation_error(path: str | Path, error: ValidationError) -> str:

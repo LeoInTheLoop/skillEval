@@ -1,8 +1,8 @@
-# Fresh-clone full-eval example. Requires an already configured OpenClaw
-# `skilleval` profile; all execution and scoring goes through `pipeline`.
+# Docker-first full-eval example. Build environments/openclaw.Dockerfile, export
+# its fixed image ID as SKILLEVAL_OPENCLAW_IMAGE, then use pipeline plan/run.
 suite_id: example_full
 suite_version: "1.0"
-description: Bundled deliverable-pack two-case full-eval smoke test
+description: Docker-isolated deliverable-pack two-case full-eval smoke test
 
 dataset: evals/datasets/full_example_v1.0.jsonl
 
@@ -10,6 +10,14 @@ runtime: openclaw
 runtime_options:
   bin: openclaw
   profile: skilleval
+
+environment:
+  backend: docker
+  image_env: SKILLEVAL_OPENCLAW_IMAGE
+  network: full
+  cpus: 2
+  memory: 2g
+  env_passthrough: [QWEN_API_KEY=DASHSCOPE_API_KEY]
 
 skills:
   dir: subjects
@@ -21,8 +29,8 @@ skills:
 models:
   - id: openclaw-default
 
-# Hard OpenClaw allowlist, not scoring-only metadata.
-tools: [read, write]
+# The container is the security boundary; expose the complete OpenClaw toolset.
+tools: ["*"]
 repeats: 1
 parallelism: 1
 timeout_seconds: 600

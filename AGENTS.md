@@ -2035,6 +2035,10 @@ Skill Metadata
 依靠逐 request 独立 profile；local 临界区同时覆盖同机线程与进程。每题
 `expect_tools` 仍只负责“应该实际调用什么”的评分。
 
+仓库 full 示例默认 `environment.backend: docker` + `tools: ["*"]`：完整 toolset 是
+容器内能力，边界由逐 request 容器、mount、workspace、资源和网络策略提供。换成 local
+时不得无思考照搬全开配置。
+
 ---
 
 ## 18.3 No-Skill Baseline

@@ -56,12 +56,15 @@ outputs/routing_example_v1.0__mock__v1/<execution-id>/
 
 mock 会显示 `QUALITY VERDICT NOT EVALUATED`。它只证明管道能跑，不能判断 skill 好坏。
 
-已经配置好 OpenClaw 后，用仓库自带的 full suite 跑真实 agent loop。它只有 2 题，
-会加载 `deliverable-pack`、调用 tool、检查产物，并自动进入 `score_full`：
+配置好 `.env` 和 Docker 后，用仓库自带的 full suite 跑真实 agent loop。它只有 2 题，
+会在逐请求容器中加载 `deliverable-pack`、调用 tool、检查产物，并自动进入 `score_full`。
+示例把 Docker 作为安全边界，所以默认开放完整 OpenClaw toolset：
 
 ```bash
-source ~/.nvm/nvm.sh
-nvm use 24
+docker build -f environments/openclaw.Dockerfile -t skilleval-openclaw .
+export SKILLEVAL_OPENCLAW_IMAGE="$(
+  docker image inspect skilleval-openclaw --format '{{.Id}}'
+)"
 
 .venv/bin/python -m pipeline plan \
   --suite evals/suites/example_full.yaml \
@@ -119,31 +122,25 @@ nvm use 24
 
 ## 换成第三方 skill 跑 full eval
 
-下面是从全新 clone 验证过的最小路径。示例使用公开的
+下面是最小路径。示例使用公开的
 [blader/humanizer](https://github.com/blader/humanizer)；它是纯 Markdown skill，
 方便把重点放在 skillEval 的执行链路上。
 
 这只是 3 题 smoke test，用来确认系统可用，不是对 humanizer 的正式质量结论。
 
-### 1. 准备 OpenClaw
+### 1. 准备 Docker OpenClaw
 
 full eval 需要 OpenClaw，因为 LiteLLM 只做一次模型调用，不执行 agent tool loop。
-完整安装、独立 profile 和 provider 配置见 [OPENCLAW.md](OPENCLAW.md)。
-
-如果通过 nvm 安装 Node，请先切到安装 OpenClaw 的版本，再验证 CLI：
+默认把它跑在逐请求容器里；完整镜像、provider 和凭据说明见 [OPENCLAW.md](OPENCLAW.md)。
 
 ```bash
-source ~/.nvm/nvm.sh
-nvm use 24
-openclaw --version
-openclaw --profile skilleval config validate
-openclaw --profile skilleval agent --local --json \
-  --session-id skilleval-smoke \
-  --message "只回复 OK"
+docker build -f environments/openclaw.Dockerfile -t skilleval-openclaw .
+export SKILLEVAL_OPENCLAW_IMAGE="$(
+  docker image inspect skilleval-openclaw --format '{{.Id}}'
+)"
 ```
 
-如果 `openclaw` 明明装过却显示 `command not found`，通常是当前 shell 仍在另一个 Node 版本。
-先执行 `nvm use 24`，再启动 Python 管道；子进程会继承当前 `PATH`。
+宿主机不需要安装 OpenClaw；容器在运行时从 `.env` 注入 provider key。
 
 ### 2. 下载并审查 skill
 
@@ -212,6 +209,14 @@ runtime_options:
   bin: openclaw
   profile: skilleval
 
+environment:
+  backend: docker
+  image_env: SKILLEVAL_OPENCLAW_IMAGE
+  network: full
+  cpus: 2
+  memory: 2g
+  env_passthrough: [QWEN_API_KEY=DASHSCOPE_API_KEY]
+
 skills:
   dir: subjects
   target: [humanizer]
@@ -222,7 +227,7 @@ skills:
 models:
   - id: openclaw-default
 
-tools: [read, write]
+tools: ["*"]
 repeats: 1
 parallelism: 1
 timeout_seconds: 600
@@ -240,12 +245,7 @@ OpenClaw 自己管理执行模型和凭据，所以这里只需要可追溯的 `
 
 ### 5. 先预检，再运行
 
-保持 OpenClaw 所在的 Node 版本处于当前 `PATH`：
-
 ```bash
-source ~/.nvm/nvm.sh
-nvm use 24
-
 .venv/bin/python -m pipeline plan \
   --suite evals/suites/full_humanizer_smoke_v1.yaml \
   --healthcheck
@@ -263,19 +263,9 @@ nvm use 24
 full eval 可能数十秒才打印下一题；只要没有超过 suite 的 `timeout_seconds`，不代表卡死。
 完成后，统一入口会自动调用 `score_full` 并生成报告。
 
-这条 smoke 路径在 2026-07-29 的全新 clone 验证结果为：
-
-```text
-3 cases / 3 conversations / 3 turns
-task_completion  100%
-artifact_hit     100%
-tool_hit         100%
-skill injected   100%
-GATE PASS
-```
-
-这证明了“下载 → 冻结 → 注入 → OpenClaw 加载 → tool → artifact → score”链路可用。
-它只做确定性检查，不代表两段改写的语义质量是 100 分。
+完成后应看到 3 cases、确定性指标和 gate。它只检查“下载 → 冻结 → 注入 → OpenClaw
+加载 → tool → artifact → score”链路；即使全部通过，也不代表两段改写的语义质量是
+100 分。
 
 检查原始轨迹和产物：
 
@@ -441,15 +431,15 @@ skills:
 优先使用 `include` 明确 catalog，避免以后新增本地 skill 时实验集合漂移。
 `target` 是归属，不等于候选集合。No-Skill 基线仍保留 `target`，但从 `include` 中移除目标。
 
-suite 顶层 `tools` 是 full eval 的运行时强 allowlist。例如 `tools: [read, write]` 会在调用
-agent 前临时写入 OpenClaw `tools.allow`，该请求结束后恢复 profile 原值；`tools: []`
-会临时写入 `tools.deny: ["*"]`，即禁止所有 tool。写入、回读校验或恢复失败都会让该次
-运行失败关闭，不会在权限未落实时继续。同一台机器上共享 local profile 的线程和
-pipeline 进程也会使用同一把文件锁，避免临时策略互相覆盖。
+suite 顶层 `tools` 是 full eval 的运行时强 allowlist。仓库 Docker 示例使用
+`tools: ["*"]`，因为容器才是它的文件系统、网络和资源边界；需要缩小 agent 能力时可写
+`tools: [read, write]`。空列表会临时写入 `tools.deny: ["*"]`，即禁止所有 tool。
+写入、回读校验或恢复失败都会让该次运行失败关闭，不会在权限未落实时继续。同一台机器
+上共享 local profile 的线程和 pipeline 进程也会使用同一把文件锁，避免临时策略互相覆盖。
 
 它与 case 的 `expect_tools` 分工不同：
 
-- suite `tools`：允许 agent 使用什么，是执行权限；
+- suite `tools`：允许 agent 使用什么，是执行权限；`["*"]` 表示完整 toolset；
 - case `expect_tools`：这道题应该实际调用什么，是评分 gold。
 
 OpenClaw profile 中原有的更严格 deny 仍然生效，suite 不会放宽它。allowlist 限制的是
@@ -573,7 +563,7 @@ git grep --cached -n -I -E \
 - full eval 会发送题目、所选 `SKILL.md` 正文和 tool catalog；
 - API key 值不进入 suite、快照、报告或模型 payload；
 - 第三方 skill 可能包含脚本和提示注入，导入前必须人工审查；
-- suite 的 `tools` 会强制映射为 local OpenClaw tool policy，并在请求后恢复；
+- suite 的 `tools` 会强制映射为 OpenClaw tool policy，并在请求后恢复；
 - 允许 `exec` 等广义 tool 仍会带来间接文件/网络能力，tool policy 不等于系统沙箱；
 - local environment 是独立 workspace，但不是强安全沙箱；运行不可信 skill 时使用 Docker backend。
 

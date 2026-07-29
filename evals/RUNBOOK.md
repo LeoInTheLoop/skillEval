@@ -132,16 +132,22 @@ catalog 或 `runs.jsonl`；只改归属不应制造“实验条件变化”的�
 > `example_full.yaml` 作为完整的最小 full-eval 样例。真实 skill、其版本和实际运行结果
 > 都是用户私有输入：放在相同目录结构供本地运行即可，不要提交。
 
+Docker 示例写 `environment.image_env: SKILLEVAL_OPENCLAW_IMAGE`，因为本地 build 的
+固定 image ID 每台机器不同。`pipeline plan/run` 会先把它解析成实际 `sha256:` ID，再
+写入快照和 `config_hash`；变量未设置、值是浮动 tag 或长度不合法都会在运行前拒绝。
+
 full suite 的 `tools` 同时进入快照和 runtime 请求，但它不是评分 gold：
 
+- `tools: ["*"]`：开放完整 OpenClaw toolset；仓库 Docker 示例默认采用；
 - `tools: [read, write]`：OpenClaw 运行前临时设置 `tools.allow`，请求后恢复；
 - `tools: []`：临时设置 `tools.deny: ["*"]`，禁止所有 tool；
 - 每题 `expect_tools`：只描述该题应观察到的调用，用于确定性评分。
 
 策略设置会回读校验，失败时拒绝执行。local profile 的“设置 → agent → 恢复”会在同机
 线程和 pipeline 进程间串行化，避免并发请求互相覆盖；Docker 每个 request 使用独立
-profile。注意允许 `exec` 就等于允许它通过 shell 产生更广的副作用，tool 名称 allowlist
-不能替代容器网络和文件系统隔离。
+profile。`example_full.yaml` 把完整 toolset 放在逐请求 Docker 容器里；如果改回 local，
+就必须重新审视 tool 列表。允许 `exec` 等于允许它通过 shell 产生更广的副作用，tool
+名称 allowlist 不能替代容器网络和文件系统隔离。
 
 suite 在进入 runner 前会先通过 `contracts/suite.py` 的严格契约：未知字段、字符串/数字
 类型漂移、重复 model ID、非法 gate、routing-only 配 tool、以及疑似明文 secret 都会直接

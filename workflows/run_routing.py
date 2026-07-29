@@ -42,6 +42,7 @@ from contracts import (
     load_cases,
     load_skills,
     load_suite,
+    resolve_suite_references,
     format_suite_validation_error,
     require_approved_dataset,
 )
@@ -551,9 +552,11 @@ def main() -> None:
 
     load_dotenv(ROOT / ".env")
     try:
-        suite = load_suite(args.suite).canonical_dict()
+        suite = resolve_suite_references(load_suite(args.suite))
     except ValidationError as error:
         raise SystemExit(format_suite_validation_error(args.suite, error)) from error
+    except ValueError as error:
+        raise SystemExit(f"suite 环境引用无效：{error}") from error
     # Healthcheck probes the runtime and environment only.  It runs before the
     # catalog and dataset are resolved so that "is OpenClaw installed?" cannot
     # be answered with an unrelated error about a missing skill — that misdirects
