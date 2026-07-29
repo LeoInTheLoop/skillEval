@@ -1,0 +1,115 @@
+{
+  "schema_version": "1.0",
+  "calibration_id": "meeting-and-brief-absolute-assertions-v1.0",
+  "gold_file": "evals/calibration/meeting_and_brief_assertions_v1.0.json",
+  "source_run": "outputs/effect_meeting-and-brief_v1.1__openclaw-default__v1/loop-r1",
+  "generated_at": "2026-07-29T16:19:50+02:00",
+  "thresholds": {
+    "judge_vs_human_agreement_min": 0.8,
+    "invalid_judge_output_rate_max": 0.02
+  },
+  "calibrations": [
+    {
+      "grading_file": "outputs/effect_meeting-and-brief_v1.1__openclaw-default__v1/loop-r1/grading.qwenplus.json",
+      "judge": {
+        "id": "qwenplus",
+        "model": "openai/qwen-plus",
+        "api_base_env": "DASHSCOPE_BASE_URL",
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "params": {
+          "temperature": 0
+        },
+        "system_prompt_hash": "sha256:4d0362f4a214079d",
+        "dimensions": {
+          "faithfulness": "v1",
+          "completeness": "v1",
+          "relevancy": "v1",
+          "instruction_following": "v1"
+        }
+      },
+      "n_annotations": 10,
+      "judge_vs_human_agreement": 0.9,
+      "invalid_judge_output_rate": 0.0,
+      "invalid_judge_outputs": 0,
+      "attempted_judge_calls": 3,
+      "ab_swap_consistency": null,
+      "ab_swap_applicability": "not_applicable_absolute_assertions",
+      "qualified_for_absolute_assertions": true,
+      "disagreements": [
+        {
+          "case_id": "meeting-and-brief-pos-02",
+          "assertion": "『刘总监』『张付总』这类人名职务没有被静默改写，最多只是标注了待核",
+          "human_passed": false,
+          "judge_passed": true,
+          "human_rationale": "输出直接把“张付总”改成“张副总”，没有标注待核。",
+          "judge_evidence": "修正的错别字：\n| 原文 | 修正 |\n|------|------|\n| 张付总 | 张副总 |"
+        }
+      ]
+    },
+    {
+      "grading_file": "outputs/effect_meeting-and-brief_v1.1__openclaw-default__v1/loop-r1/grading.qwenplus-inputs.json",
+      "judge": {
+        "id": "qwenplus-inputs",
+        "model": "openai/qwen-plus",
+        "api_base_env": "DASHSCOPE_BASE_URL",
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "params": {
+          "temperature": 0
+        },
+        "system_prompt_hash": "sha256:4d0362f4a214079d",
+        "dimensions": {
+          "faithfulness": "v1",
+          "completeness": "v1",
+          "relevancy": "v1",
+          "instruction_following": "v1"
+        }
+      },
+      "n_annotations": 10,
+      "judge_vs_human_agreement": 0.9,
+      "invalid_judge_output_rate": 0.0,
+      "invalid_judge_outputs": 0,
+      "attempted_judge_calls": 3,
+      "ab_swap_consistency": null,
+      "ab_swap_applicability": "not_applicable_absolute_assertions",
+      "qualified_for_absolute_assertions": true,
+      "disagreements": [
+        {
+          "case_id": "meeting-and-brief-pos-02",
+          "assertion": "『刘总监』『张付总』这类人名职务没有被静默改写，最多只是标注了待核",
+          "human_passed": false,
+          "judge_passed": true,
+          "human_rationale": "输出直接把“张付总”改成“张副总”，没有标注待核。",
+          "judge_evidence": "| 原文 | 修正 |\n|------|------|\n| 张付总 | 张副总 |"
+        }
+      ]
+    },
+    {
+      "grading_file": "outputs/effect_meeting-and-brief_v1.1__openclaw-default__v1/loop-r1/grading.qwen37max.json",
+      "judge": {
+        "id": "qwen37max",
+        "model": "openai/qwen3.7-max",
+        "api_base_env": "DASHSCOPE_BASE_URL",
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "params": {
+          "temperature": 0
+        },
+        "system_prompt_hash": "sha256:4d0362f4a214079d",
+        "dimensions": {
+          "faithfulness": "v1",
+          "completeness": "v1",
+          "relevancy": "v1",
+          "instruction_following": "v1"
+        }
+      },
+      "n_annotations": 10,
+      "judge_vs_human_agreement": 1.0,
+      "invalid_judge_output_rate": 0.0,
+      "invalid_judge_outputs": 0,
+      "attempted_judge_calls": 3,
+      "ab_swap_consistency": null,
+      "ab_swap_applicability": "not_applicable_absolute_assertions",
+      "qualified_for_absolute_assertions": true,
+      "disagreements": []
+    }
+  ]
+}

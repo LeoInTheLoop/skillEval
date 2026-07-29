@@ -1,0 +1,69 @@
+{
+  "schema_version": "1.0",
+  "calibration_id": "meeting-and-brief-absolute-assertions-v1.0",
+  "source_run": "outputs/effect_meeting-and-brief_v1.1__openclaw-default__v1/loop-r1",
+  "annotated_by": "HANDOFF.md manual audit (2026-07-29)",
+  "annotated_at": "2026-07-29",
+  "annotations": [
+    {
+      "case_id": "meeting-and-brief-pos-01",
+      "assertion": "整理结果里列出了李明、赵磊两个人各自负责的事项",
+      "passed": true,
+      "rationale": "产物行动项表同时列出李明负责诊断报告/访谈、赵磊负责绩效方案框架。"
+    },
+    {
+      "case_id": "meeting-and-brief-pos-01",
+      "assertion": "整理结果里保留了 7月31号、8月5号、8月10号这三个时间节点，且与文字稿一致",
+      "passed": true,
+      "rationale": "三个时间节点均在文字稿和整理产物中出现，日期含义一致。"
+    },
+    {
+      "case_id": "meeting-and-brief-pos-01",
+      "assertion": "把转写稿里的『组织架够』当作疑似转写错误做了处理（改正为组织架构或标注待核），没有原样当成正确术语",
+      "passed": true,
+      "rationale": "正式整理内容统一使用“组织架构”，没有把“组织架够”当作正确术语。"
+    },
+    {
+      "case_id": "meeting-and-brief-pos-01",
+      "assertion": "没有出现文字稿里不存在的人名或日期",
+      "passed": false,
+      "rationale": "赵磊确实出现在文字稿第 5 段，不能据此判失败；但产物写入具体日期 2026-07-28/29，而文字稿本身没有给出这些具体日期。"
+    },
+    {
+      "case_id": "meeting-and-brief-pos-02",
+      "assertion": "把『进调』『对彪』『复判』『薪酬体细』这几个词当作转写错误处理了（改正或标注待核）",
+      "passed": true,
+      "rationale": "四个词均在修正清单中被识别并改正。"
+    },
+    {
+      "case_id": "meeting-and-brief-pos-02",
+      "assertion": "1280 万这个数字没有被静默修改，要么原样保留要么标了待核",
+      "passed": true,
+      "rationale": "清理后的文字稿原样保留 1280 万。"
+    },
+    {
+      "case_id": "meeting-and-brief-pos-02",
+      "assertion": "『刘总监』『张付总』这类人名职务没有被静默改写，最多只是标注了待核",
+      "passed": false,
+      "rationale": "输出直接把“张付总”改成“张副总”，没有标注待核。"
+    },
+    {
+      "case_id": "meeting-and-brief-pos-02",
+      "assertion": "输出里给出了改动的清单或逐处标注，能看出哪里改了、依据是什么",
+      "passed": true,
+      "rationale": "原文/修正对照表逐项展示了改动，能够追溯每一处修改。"
+    },
+    {
+      "case_id": "none-rej-01",
+      "assertion": "直接回答了 3 个百分点（或等价说法）",
+      "passed": true,
+      "rationale": "最终答案直接给出提升 3 个百分点。"
+    },
+    {
+      "case_id": "none-rej-01",
+      "assertion": "没有把这个问题当成会议纪要任务来处理",
+      "passed": true,
+      "rationale": "只回答百分点计算，没有生成会议纪要或相关文件。"
+    }
+  ]
+}

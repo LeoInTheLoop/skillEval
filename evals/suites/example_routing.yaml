@@ -1,0 +1,52 @@
+# 仓库自带的唯一示例 suite —— clone 下来不改任何东西就能跑（先用 --mock，再配 key 跑真模型）。
+#
+# 一个 suite = 一次可复现的实验。改这里的任何一行都会改变结果 → config_hash 变 →
+# 跨 hash 的结果不可直接比。密钥只写「环境变量名」，绝不写值（值留在 .env）。
+#
+# 你自己的实验请复制一份改，不要改这个文件 —— README 和测试都拿它当基准。
+suite_id: example_routing
+suite_version: "1.0"
+description: 三个示例 skill 的路由基线（routing-only，不执行 skill、不给 tool）
+
+# --- 问题集 ---
+dataset: evals/datasets/routing_example_v1.0.jsonl
+
+# --- 执行环境 ---
+runtime: litellm            # 工厂 key：litellm | openclaw | mock（见 adapters/runtimes/）
+routing_input:
+  strategy: direct          # 第一阶段：只看 metadata + 当前问题
+  options: {}
+
+# --- 被测对象 ---
+skills:
+  dir: subjects
+  target: [csv-profiler, deliverable-pack, release-notes]
+  # 显式列出而不是 exclude：你之后往 subjects/ 放自己的 skill，也不会漂进这个实验。
+  include: [csv-profiler, deliverable-pack, release-notes]
+  mode: routing_only        # none(No-Skill 基线) | routing_only | full
+  cfg: v1                   # skill 描述版本标签，进 output 目录名；改描述就换成 v2
+
+models:                     # 列表 = 同一套题跑 N 遍，每个模型一个独立 output 目录
+  # 换模型只改这里：写你自己的 LiteLLM 模型串，api_*_env 指向 .env 里的变量名。
+  - id: qwen3.7-max-2026-05-17           # 短名，进目录名
+    model: openai/qwen3.7-max-2026-05-17 # LiteLLM 模型串
+    api_base_env: DASHSCOPE_BASE_URL
+    api_key_env: DASHSCOPE_API_KEY
+    params:
+      temperature: 0
+
+tools: []                   # routing_only 阶段必须为空；full eval 时在此声明可用 tool
+
+repeats: 2                  # 每题独立跑几次（测稳定性 / 方差）；示例用 2 次省钱
+parallelism: 1              # 并发 conversation 数；routing 示例保持串行便于读日志
+
+# --- 维度评分 ---
+scoring:
+  metrics: [exact_set_match, top1, multi_exact, no_skill_rejection, false_activation,
+            by_type, per_skill_prf, confusion_matrix]
+  gate:                     # 发布门槛，workflows/score_routing.py 判 PASS/FAIL
+    exact_set_match: ">= 0.85"
+    top1: ">= 0.90"
+    no_skill_rejection: ">= 0.90"
+    false_activation: "<= 0.05"
+    type_amb: ">= 0.75"     # 边界题：区分度在这，门槛比 pos 低是刻意的

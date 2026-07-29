@@ -1,0 +1,12 @@
+# Python >= 3.11（用了 X | Y 类型语法和 tomllib 风格的 stdlib 特性）。
+# 3.13 是验证过的版本；3.14 也能装，但 litellm 目前没有 cp314 wheel，
+# pip 会现场编译，第一次安装要几分钟而不是几秒。
+pydantic>=2
+python-frontmatter
+python-dotenv
+scikit-learn
+pandas
+litellm          # 仅真实模型调用需要；--mock 不需要
+pyyaml           # suite 配置
+docker>=7        # 只是 Docker 的 Python SDK；不用 docker 环境的话装了也不碍事
+pytest           # 跑 tests/ 用；不跑测试可以不装

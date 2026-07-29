@@ -1,0 +1,20 @@
+# routing_example_v1.0 — 仓库自带的示例题集，配 evals/suites/example_routing.yaml。
+# 唯一目的：clone 下来不配任何东西就能把「① 定题 → ⑤ 判门槛」整条链路跑通一次。
+# catalog 是三个已跟踪的示例 skill：deliverable-pack / csv-profiler / release-notes。
+# 覆盖：8 pos + 2 amb + 1 multi + 3 rej。写题规范见 evals/AUTHORING.md。
+# 注意：prompt 里不出现 skill 名，也不抄 triggers 原词以外的提示 —— 题目替模型
+# 把答案抄好了，就测不出 description 写得好不好。
+{"id": "example-pos-01", "prompt": "上个季度这堆销售数字，整理成一份交付包给客户", "expected_skills": ["deliverable-pack"], "tags": ["positive"], "severity": "high"}
+{"id": "example-pos-02", "prompt": "把这份调研结论做成能直接交出去的东西，机器读的那份和写给人看的说明都要", "expected_skills": ["deliverable-pack"], "tags": ["positive"], "severity": "high"}
+{"id": "example-pos-03", "prompt": "这些访谈记录汇总交付一下，别只在聊天里回我", "expected_skills": ["deliverable-pack"], "tags": ["positive"], "severity": "medium"}
+{"id": "example-pos-04", "prompt": "这份 CSV 我刚拿到不敢直接用，先看看每列都是什么、有没有空的", "expected_skills": ["csv-profiler"], "tags": ["positive"], "severity": "high"}
+{"id": "example-pos-05", "prompt": "帮我看看这份数据质量怎么样，有没有脏数据", "expected_skills": ["csv-profiler"], "tags": ["positive"], "severity": "high"}
+{"id": "example-pos-06", "prompt": "这表里日期格式好像不统一，还有哪几列有毛病", "expected_skills": ["csv-profiler"], "tags": ["positive"], "severity": "medium"}
+{"id": "example-pos-07", "prompt": "把这次合并的三十个 PR 写成给用户看的更新说明", "expected_skills": ["release-notes"], "tags": ["positive"], "severity": "high"}
+{"id": "example-pos-08", "prompt": "2.4 这版到底改了什么，写一段能直接发出去的", "expected_skills": ["release-notes"], "tags": ["positive"], "severity": "medium"}
+{"id": "example-amb-01", "prompt": "这份销售数据你先给我讲讲情况", "expected_skills": ["csv-profiler"], "tags": ["ambiguous"], "severity": "high"}
+{"id": "example-amb-02", "prompt": "把这份数据整理好交给财务那边", "expected_skills": ["deliverable-pack"], "tags": ["ambiguous"], "severity": "high"}
+{"id": "example-multi-01", "prompt": "先看看这份数据干不干净，然后整理成一份包发出去", "expected_skills": ["csv-profiler", "deliverable-pack"], "tags": ["multi"], "severity": "medium"}
+{"id": "example-rej-01", "prompt": "帮我把这段话翻译成英文", "expected_skills": [], "tags": ["reject"], "severity": "high"}
+{"id": "example-rej-02", "prompt": "python 里 dict 怎么按 value 排序", "expected_skills": [], "tags": ["reject"], "severity": "high"}
+{"id": "example-rej-03", "prompt": "这个季度的目标是什么来着，我记不清了", "expected_skills": [], "tags": ["reject"], "severity": "medium"}

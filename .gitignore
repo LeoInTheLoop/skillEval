@@ -1,0 +1,36 @@
+.venv/
+outputs/
+# Local-only notes, branding, and patches.
+.local/
+# Subject evaluation bundles contain private skills, cases, and model outputs.
+archives/
+# skillhub / agent 的安装源目录；装完复制进 subjects/<skill-id>/vN/ 做本地评测。
+installed_skills/
+.env
+# 私有额度台账：模型名、剩余 token、到期日
+MODELS.local.md
+# Legacy local provenance notes; new local-only files live under .local/.
+PROVENANCE.local.md
+__pycache__/
+evals/drafts/
+
+# --- 私有输入：只发一套自洽的示例，其余留在本地 ---
+# 规则：被测 skill、题集、suite、素材都是**用户私有输入**，不随 eval 平台上传。
+# 仓库只跟踪一套能在空白 clone 上跑通的示例（三个 skill + 一份题集 + 一个 suite）；
+# 你自己的实验配置照常放在这些目录里，git 不会碰。
+/subjects/*
+!/subjects/csv-profiler/
+!/subjects/deliverable-pack/
+!/subjects/release-notes/
+
+evals/datasets/*
+!evals/datasets/routing_example_v1.0.jsonl
+
+evals/suites/*
+!evals/suites/example_routing.yaml
+
+evals/fixtures/*
+!evals/fixtures/.gitkeep
+
+evals/expected/*
+!evals/expected/.gitkeep

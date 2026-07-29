@@ -1,0 +1,248 @@
+"""N2 Experiment Config 验收测试（AGENTS.md §8.3）。"""
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+import yaml
+from pydantic import ValidationError
+
+from adapters.runtimes.mock import MockRuntimeAdapter
+from contracts import InvocationRequest, RoutingSuite, load_suite
+from workflows.run_routing import config_hash, resolve_skills
+
+
+def _valid_suite() -> dict:
+    return {
+        "suite_id": "routing_demo",
+        "suite_version": "1.0",
+        "description": "demo",
+        "dataset": "evals/datasets/demo.jsonl",
+        "runtime": "litellm",
+        "skills": {
+            "dir": "skills",
+            "target": ["pdf"],
+            "mode": "routing_only",
+            "cfg": "v1",
+        },
+        "models": [
+            {
+                "id": "model-a",
+                "model": "openai/model-a",
+                "api_key_env": "MODEL_API_KEY",
+                "params": {"temperature": 0},
+            }
+        ],
+        "tools": [],
+        "repeats": 3,
+        "scoring": {
+            "metrics": ["exact_set_match", "top1"],
+            "gate": {"exact_set_match": ">= 0.80"},
+        },
+    }
+
+
+def test_仓库内所有_suite_都通过严格契约():
+    root = Path(__file__).parents[1]
+    for path in sorted((root / "evals/suites").glob("*.yaml")):
+        assert load_suite(path).suite_id
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"未知字段": True},
+        {"repeats": "3"},
+        {"repeats": 0},
+        {"parallelism": "4"},
+        {"parallelism": 0},
+        {"parallelism": 65},
+        {"suite_version": 1.0},
+    ],
+)
+def test_未知字段与类型漂移在执行前被拒绝(change):
+    data = _valid_suite()
+    data.update(change)
+    with pytest.raises(ValidationError):
+        RoutingSuite.model_validate(data)
+
+
+def test_model_id_tools_metrics和exclude_都不能重复():
+    cases = []
+    duplicate_model = _valid_suite()
+    duplicate_model["models"] *= 2
+    cases.append(duplicate_model)
+
+    duplicate_tools = _valid_suite()
+    duplicate_tools["skills"]["mode"] = "full"
+    duplicate_tools["tools"] = ["filesystem", "filesystem"]
+    cases.append(duplicate_tools)
+
+    duplicate_metrics = _valid_suite()
+    duplicate_metrics["scoring"]["metrics"] = ["top1", "top1"]
+    cases.append(duplicate_metrics)
+
+    duplicate_exclude = _valid_suite()
+    duplicate_exclude["skills"]["exclude"] = ["pdf", "pdf"]
+    cases.append(duplicate_exclude)
+
+    overlap_include_exclude = _valid_suite()
+    overlap_include_exclude["skills"].update({"include": ["pdf"], "exclude": ["pdf"]})
+    cases.append(overlap_include_exclude)
+
+    duplicate_target = _valid_suite()
+    duplicate_target["skills"]["target"] = ["pdf", "pdf"]
+    cases.append(duplicate_target)
+
+    for data in cases:
+        with pytest.raises(ValidationError):
+            RoutingSuite.model_validate(data)
+
+
+def test_routing_only_不能声明_tools():
+    data = _valid_suite()
+    data["tools"] = ["filesystem"]
+    with pytest.raises(ValidationError, match="routing_only"):
+        RoutingSuite.model_validate(data)
+
+
+def test_target必须显式声明且与catalog候选分开():
+    missing = _valid_suite()
+    del missing["skills"]["target"]
+    with pytest.raises(ValidationError, match="target"):
+        RoutingSuite.model_validate(missing)
+
+    no_skill_baseline = _valid_suite()
+    no_skill_baseline["skills"].update(
+        {"target": ["pdf"], "include": ["docx"], "mode": "none"}
+    )
+    suite = RoutingSuite.model_validate(no_skill_baseline)
+    assert suite.skills.target == ["pdf"]
+    assert suite.skills.include == ["docx"]
+
+
+def test_litellm_model条目必须声明_model_而openclaw不用():
+    data = _valid_suite()
+    del data["models"][0]["model"]
+    with pytest.raises(ValidationError, match="litellm"):
+        RoutingSuite.model_validate(data)
+
+    data["runtime"] = "openclaw"
+    assert RoutingSuite.model_validate(data).models[0].model is None
+
+
+@pytest.mark.parametrize("condition", ["> 0.8", ">= 80", "<= -0.1", "yes"])
+def test_gate_条件语法在运行前校验(condition):
+    data = _valid_suite()
+    data["scoring"]["gate"]["top1"] = condition
+    with pytest.raises(ValidationError, match="gate"):
+        RoutingSuite.model_validate(data)
+
+
+def test_suite_禁止明文_secret_但允许环境变量或secret_id():
+    data = _valid_suite()
+    data["runtime_options"] = {"api_key": "sk-plaintext"}
+    with pytest.raises(ValidationError, match="明文 secret"):
+        RoutingSuite.model_validate(data)
+
+    data["runtime_options"] = {"providers": [{"password": "plaintext"}]}
+    with pytest.raises(ValidationError, match=r"providers\[0\]\.password"):
+        RoutingSuite.model_validate(data)
+
+    data["runtime_options"] = {"secret_id": "provider/skilleval"}
+    suite = RoutingSuite.model_validate(data)
+    assert suite.models[0].api_key_env == "MODEL_API_KEY"
+
+
+def test_env引用必须是合法环境变量名():
+    data = _valid_suite()
+    data["models"][0]["api_key_env"] = "not a variable"
+    with pytest.raises(ValidationError):
+        RoutingSuite.model_validate(data)
+
+
+def test_canonical_config_补默认值且相同语义_hash稳定():
+    implicit = RoutingSuite.model_validate(_valid_suite())
+    explicit_data = _valid_suite()
+    explicit_data.update({"runtime_options": {}, "timeout_seconds": 300})
+    explicit = RoutingSuite.model_validate(explicit_data)
+
+    assert implicit.canonical_dict() == explicit.canonical_dict()
+    assert config_hash(implicit.canonical_dict()) == config_hash(explicit.canonical_dict())
+
+
+def test_target只管归属不改变运行config_hash():
+    first = RoutingSuite.model_validate(_valid_suite()).canonical_dict()
+    second_data = _valid_suite()
+    second_data["skills"]["target"] = ["docx"]
+    second = RoutingSuite.model_validate(second_data).canonical_dict()
+
+    assert first["skills"]["target"] != second["skills"]["target"]
+    assert config_hash(first) == config_hash(second)
+
+
+def test_parallelism进入config_hash():
+    serial = RoutingSuite.model_validate(_valid_suite()).canonical_dict()
+    parallel_data = _valid_suite()
+    parallel_data["parallelism"] = 4
+    parallel = RoutingSuite.model_validate(parallel_data).canonical_dict()
+    legacy_serial = dict(serial)
+    legacy_serial.pop("parallelism")
+
+    assert serial["parallelism"] == 1
+    assert parallel["parallelism"] == 4
+    assert config_hash(serial) == config_hash(legacy_serial)
+    assert config_hash(serial) != config_hash(parallel)
+
+
+def test_可导出_json_schema():
+    schema = RoutingSuite.model_json_schema()
+    assert schema["type"] == "object" and "models" in schema["properties"]
+
+
+def test_load_suite_拒绝空文件(tmp_path):
+    path = tmp_path / "empty.yaml"
+    path.write_text("", encoding="utf-8")
+    with pytest.raises(ValidationError):
+        load_suite(path)
+
+
+def test_none_mode_实际暴露空catalog_且mock不会误激活():
+    data = _valid_suite()
+    data["skills"]["mode"] = "none"
+    suite = RoutingSuite.model_validate(data).canonical_dict()
+    assert resolve_skills(suite) == []
+
+    runtime = MockRuntimeAdapter(expected={"none-rej-01": []})
+    result = runtime.run(
+        InvocationRequest(
+            request_id="r",
+            case_id="none-rej-01",
+            repeat_index=0,
+            prompt="不应激活",
+            skills=[],
+            skill_mode="none",
+            model={"id": "mock"},
+        )
+    )
+    assert result.ok and result.selected_skills == []
+
+
+def test_include仅暴露指定skill(tmp_path):
+    for name in ("alpha", "beta"):
+        skill = tmp_path / "skills" / name / "v1"
+        skill.mkdir(parents=True)
+        (skill / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name}\n---\nbody", encoding="utf-8"
+        )
+    data = _valid_suite()
+    data["skills"].update({"dir": str(tmp_path / "skills"), "include": ["alpha"]})
+    suite = RoutingSuite.model_validate(data).canonical_dict()
+    assert [skill.skill_id for skill in resolve_skills(suite)] == ["alpha"]
+
+
+def test_yaml_序列化后可无损读回(tmp_path):
+    data = _valid_suite()
+    path = tmp_path / "suite.yaml"
+    path.write_text(yaml.safe_dump(data, allow_unicode=True), encoding="utf-8")
+    assert load_suite(path).canonical_dict() == RoutingSuite.model_validate(data).canonical_dict()
