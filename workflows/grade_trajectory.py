@@ -18,7 +18,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
 from contracts import TRAJECTORY_DIMENSIONS, SuiteJudgeSpec, TrajectoryDimensionScore, load_cases
-from workflows.grade import _extract_json, call_litellm
+from judges.llm import LLMJudge, call_litellm
 
 ROOT = Path(__file__).parent.parent
 GRADER_VERSION = "trajectory-judge-v1"
@@ -91,14 +91,11 @@ def build_prompt(case, run: dict[str, Any], dimensions: list[str]) -> str:
 def grade_one(case, run: dict[str, Any], judge: SuiteJudgeSpec,
               completion: Callable[..., str] = call_litellm) -> dict[str, Any]:
     configured = (run.get("trajectory_dimensions") or list(TRAJECTORY_DIMENSIONS))
-    raw = completion(
-        model=judge.model,
-        api_base_env=judge.api_base_env,
-        api_key_env=judge.api_key_env,
-        params=judge.params,
-        prompt=build_prompt(case, run, configured),
-    )
-    batch = _Batch.model_validate_json(_extract_json(raw))
+    batch = LLMJudge(
+        judge,
+        system_prompt=SYSTEM_PROMPT,
+        completion=completion,
+    ).judge(build_prompt(case, run, configured), _Batch)
     got = [item.dimension for item in batch.dimensions]
     if got != configured:
         raise ValueError(f"{case.id}: trajectory judge 维度不匹配；期望 {configured}，实际 {got}")

@@ -34,8 +34,8 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
 from workflows import dimensions as dims
-from workflows.litellm_support import quiet_completion
 from contracts import FullEvalTurn, RoutingCase, RunResult, SuiteJudgeSpec, load_cases
+from judges.llm import LLMJudge, call_litellm as _shared_call_litellm, extract_json as _extract_json
 
 ROOT = Path(__file__).parent.parent
 GRADER_VERSION = "p4-v0.3"
@@ -327,33 +327,17 @@ def call_litellm(
     api_key_env: str,
     params: dict[str, Any],
     prompt: str,
+    system_prompt: str | None = None,
 ) -> str:
-    import litellm
-
-    response = quiet_completion(
-        litellm,
+    """Backward-compatible wrapper; new code should use ``judges.LLMJudge``."""
+    return _shared_call_litellm(
         model=model,
-        api_base=os.environ.get(api_base_env) or None,
-        api_key=os.environ.get(api_key_env) or None,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": prompt},
-        ],
-        response_format={"type": "json_object"},
-        timeout=300,
-        **params,
+        api_base_env=api_base_env,
+        api_key_env=api_key_env,
+        params=params,
+        prompt=prompt,
+        system_prompt=system_prompt or SYSTEM_PROMPT,
     )
-    return response.choices[0].message.content or ""
-
-
-def _extract_json(text: str) -> str:
-    value = text.strip().strip("`")
-    if value.lower().startswith("json"):
-        value = value[4:].lstrip()
-    left, right = value.find("{"), value.rfind("}")
-    if left == -1 or right == -1:
-        raise ValueError("judge 输出里没有 JSON object")
-    return value[left : right + 1]
 
 
 def validate_expectations(
@@ -417,14 +401,14 @@ def grade_run(
     ]
     skipped = [d.id for d in wanted if d not in applicable]
 
-    raw = completion(
-        model=judge.model,
-        api_base_env=judge.api_base_env,
-        api_key_env=judge.api_key_env,
-        params=judge.params,
-        prompt=build_grading_prompt(case, run, applicable, history),
+    batch = LLMJudge(
+        judge,
+        system_prompt=SYSTEM_PROMPT,
+        completion=completion,
+    ).judge(
+        build_grading_prompt(case, run, applicable, history),
+        _JudgedBatch,
     )
-    batch = _JudgedBatch.model_validate_json(_extract_json(raw))
     expectations = validate_expectations(
         batch.expectations,
         turn.expect_assertions,

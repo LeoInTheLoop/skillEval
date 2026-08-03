@@ -213,6 +213,41 @@ def test_跟踪的full示例默认Docker且开放完整toolset(monkeypatch):
     assert suite["tools"] == ["*"]
 
 
+def test_full_suite_省略运行时和环境时默认Docker加OpenClaw():
+    data = _valid_suite()
+    data.pop("runtime")
+    data["skills"]["mode"] = "full"
+    data["tools"] = ["read", "write"]
+
+    suite = RoutingSuite.model_validate(data).canonical_dict()
+
+    assert suite["runtime"] == "openclaw"
+    assert suite["runtime_options"] == {"bin": "openclaw", "profile": "skilleval"}
+    assert suite["environment"] == {
+        "backend": "docker",
+        "image": None,
+        "image_env": "SKILLEVAL_OPENCLAW_IMAGE",
+        "network": "full",
+        "cpus": None,
+        "memory": None,
+        "env_passthrough": [],
+        "options": {},
+    }
+
+
+def test_full_suite_显式local环境仍可覆盖默认值():
+    data = _valid_suite()
+    data.pop("runtime")
+    data["skills"]["mode"] = "full"
+    data["tools"] = ["read", "write"]
+    data["environment"] = {"backend": "local"}
+
+    suite = RoutingSuite.model_validate(data).canonical_dict()
+
+    assert suite["runtime"] == "openclaw"
+    assert suite["environment"]["backend"] == "local"
+
+
 def test_canonical_config_补默认值且相同语义_hash稳定():
     implicit = RoutingSuite.model_validate(_valid_suite())
     explicit_data = _valid_suite()
