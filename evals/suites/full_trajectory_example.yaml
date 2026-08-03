@@ -8,6 +8,12 @@ runtime: openclaw
 runtime_options:
   bin: openclaw
   profile: skilleval
+  # 容器 profile 每次都是全新的，不显式指定就会落到镜像默认模型上；
+  # 写在这里它才进 config_hash（§4.4）。
+  model: deepseek/deepseek-v4-flash
+  # 镜像里 qwen 和 deepseek 两家 provider 都装着；用哪家由这一行决定。
+  # 它决定 onboard 去读容器里的哪个 key 变量（deepseek → DEEPSEEK_API_KEY）。
+  auth_choice: deepseek-api-key
 
 environment:
   backend: docker
@@ -15,7 +21,8 @@ environment:
   network: full
   cpus: 2
   memory: 2g
-  env_passthrough: [QWEN_API_KEY=DASHSCOPE_API_KEY]
+  # 容器里的名字=宿主机 .env 里的名字。deepseek provider 认 DEEPSEEK_API_KEY。
+  env_passthrough: [DEEPSEEK_API_KEY=DEEPSEEK_API_KEY]
 
 skills:
   dir: subjects

@@ -37,9 +37,25 @@ EvaluationResult
 Regression Report
 ```
 
+写 Skill
+  ↓
+准备测试问题
+  ↓
+有 Skill / 无 Skill 各跑一次/ v2
+  ↓
+检查输出是否符合预期
+  ↓
+统计通过率、耗时、Token、方差
+  ↓
+人工查看结果
+  ↓
+修改 Skill
+  ↓
+重新测试
+
 ---
 参考最多的
-claudecode skill-creator
+claudecode skill-creatorskill-creator 里的 run_eval.py、aggregate_benchmark.py 和 run_loop.py
 agentic RL openclawrl 设计
 
 
@@ -2274,7 +2290,7 @@ MLflowScorerAdapter
 
 | 候选 | 版本 | 结论 |
 | --- | --- | --- |
-| **DeepEval** | 4.1.4 | ❌ 不接。它最对口的 `TaskCompletionMetric` / `ToolCorrectnessMetric`，本项目**已有确定性实现**（`workflows/score_full.py` 的 `done` / `tool_hit`），换成 LLM 判定违反 §3.4 与规则 12；`PlanQualityMetric` / `StepEfficiencyMetric` 需要完整 trace，而 `RunResult` 只有聚合 `toolSummary`，喂不进去。实际用得上的只剩 G-Eval，为它背一个带 CLI / telemetry / 云端集成的重依赖不划算 |
+| **DeepEval** | 4.1.4 | ❌ 不接。它最对口的 `TaskCompletionMetric` / `ToolCorrectnessMetric`，本项目**已有确定性实现**（`workflows/score_full.py` 的 `done` / `tool_hit`），换成 LLM 判定违反 §3.4 与规则 12；`PlanQualityMetric` / `StepEfficiencyMetric` 需要完整 trace —— 2026-08-03 起 `RunResult.trajectory` 已有 exact 逐次事件（见 `evals/TRAJECTORY.md`），所以「喂不进去」不再成立，但仍不接：本项目的顺序/参数判定走 `evaluators/trajectory.py`，为两个指标背整个 DeepEval 不划算。实际用得上的只剩 G-Eval，为它背一个带 CLI / telemetry / 云端集成的重依赖不划算 |
 | **Braintrust autoevals** | 0.3.0 | ⚠️ 部分复用。`LLMClassifier`（prompt_template + choice_scores）的结构值得抄，`workflows/dimensions.py` 就是照它组织的；但它绑 OpenAI SDK，而 judge 在本项目必须走独立 `JUDGE_*` 通道，装了它等于仓库里并存两条判分调用路径 |
 | **Ragas** | — | ❌ 场景不符，本项目不是 RAG，`context_precision`/`context_recall` 无处安放 |
 
@@ -2282,8 +2298,8 @@ MLflowScorerAdapter
 里用 `source` 字段注明抄自哪个库的哪个指标），调用层走已有的 litellm judge 通道。
 这样零新依赖、judge 的 env 解耦不受破坏，将来要换库时对着 `source` 逐条对表即可。
 
-> 若日后 `RunResult` 支持完整 trace（P5/P7），`PlanQuality`/`StepEfficiency`
-> 会重新变得可用，届时按 §20.3 的 `DeepEvalAdapter` 补一个薄 Adapter，不要推翻本节。
+> `RunResult` 已支持 exact trace，`PlanQuality`/`StepEfficiency` 因此重新可用；
+> 真要用时按 §20.3 的 `DeepEvalAdapter` 补一个薄 Adapter，不要推翻本节。
 
 ---
 

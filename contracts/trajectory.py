@@ -27,6 +27,8 @@ class TrajectoryEvent(BaseModel):
     event_type: TrajectoryEventType
     name: str = Field(min_length=1)
     tool_name: str | None = None
+    # runtime 给的调用 id：tool_call ↔ tool_result 靠它配对，不靠数组位置或时间戳
+    call_id: str | None = None
     arguments: dict[str, Any] | None = None
     result_summary: str | None = None
     status: EventStatus = "unknown"
@@ -55,12 +57,21 @@ class TrajectoryExpectation(BaseModel):
     required_order: list[str] = Field(default_factory=list)
     required_state_change: bool = False
     required_verification: bool = False
+    # 哪些 tool 算「观察/验证」由题目声明。evaluator 不猜 tool 语义：
+    # 不填就保持 N/A，填了才用「改过的东西事后被它成功读过」判 verification。
+    verification_tools: list[str] = Field(default_factory=list)
     assertions: list[str] = Field(default_factory=list)
 
     @model_validator(mode="after")
     def _validate_tools(self) -> "TrajectoryExpectation":
         if len(self.required_tools) != len(set(self.required_tools)):
             raise ValueError("trajectory.required_tools 不能重复")
+        if len(self.verification_tools) != len(set(self.verification_tools)):
+            raise ValueError("trajectory.verification_tools 不能重复")
+        if self.required_verification and not self.verification_tools:
+            raise ValueError(
+                "声明 required_verification 就必须给 verification_tools；"
+                "否则 verification_rate 只能永远记 N/A")
         if len(self.forbidden_tools) != len(set(self.forbidden_tools)):
             raise ValueError("trajectory.forbidden_tools 不能重复")
         overlap = sorted(set(self.required_tools) & set(self.forbidden_tools))

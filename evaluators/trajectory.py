@@ -59,6 +59,62 @@ def _exact_events(run: dict[str, Any]) -> list[dict[str, Any]]:
             and e.get("evidence_level") == "exact"]
 
 
+def _arg_strings(value: Any) -> list[str]:
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for v in value.values() for s in _arg_strings(v)]
+    if isinstance(value, list):
+        return [s for v in value for s in _arg_strings(v)]
+    return []
+
+
+def _targets(event: dict[str, Any], path: str) -> bool:
+    """这次调用是不是**指向** path。
+
+    只认「某个参数值以该路径结尾」，不认「参数里出现过这串字符」——否则一篇正文里
+    提到了文件名的 write 会被算成读回它自己。
+    """
+    return any(s == path or s.endswith(path) for s in _arg_strings(event.get("arguments")))
+
+
+def _succeeded(run: dict[str, Any]) -> set[str]:
+    return {e.get("call_id") for e in _events(run)
+            if e.get("event_type") == "tool_result" and e.get("status") == "success"
+            and e.get("call_id")}
+
+
+def _readback_rate(run: dict[str, Any], probes: set[str]) -> float | None:
+    """「改过的东西，事后有没有被题目声明的 probe 工具成功读过」。
+
+    两处分类都不靠猜 tool 语义：probe 由题目声明（`verification_tools`），
+    「状态确实变了」由 workspace diff 的 artifact 证明。probe 之外的调用一律
+    当作产生方，所以判定是「先产生、后观察」的顺序事实，不是对工具的语义假设。
+
+    ponytail: 只覆盖「产物有路径」这一类环境。数据库/API 类副作用要验证时，
+    得由那类 skill 的专用 evaluator（T3）自己给出 state key，别在这儿加分支。
+    """
+    exact = _exact_events(run)
+    paths = [a.get("path") for a in (run.get("artifacts") or []) if a.get("path")]
+    if not probes or not exact or not paths:
+        return None
+    ok = _succeeded(run)
+    produced, verified = 0, 0
+    for path in paths:
+        writes = [e for e in exact
+                  if e.get("tool_name") not in probes and _targets(e, path)]
+        if not writes:
+            continue  # 不是 agent 显式写出来的，不要求它验证
+        produced += 1
+        first_write = min(int(e.get("step_index") or 0) for e in writes)
+        if any(e.get("tool_name") in probes and _targets(e, path)
+               and e.get("call_id") in ok
+               and int(e.get("step_index") or 0) > first_write
+               for e in exact):
+            verified += 1
+    return round(verified / produced, 4) if produced else None
+
+
 def score_structured(run: dict[str, Any], expectation: dict[str, Any] | None) -> dict[str, float | None]:
     """只判有明确结构化 gold 且证据足够的部分；其余返回 N/A。"""
     out: dict[str, float | None] = {name: None for name in DIMENSIONS}
@@ -97,8 +153,12 @@ def score_structured(run: dict[str, Any], expectation: dict[str, Any] | None) ->
     if expectation.get("required_verification"):
         verified = [e for e in _events(run) if e.get("event_type") == "verification"
                     and e.get("status") == "success"]
-        # 有明确轨迹时判；旧 runtime 没有 verification 事件，不能把未知当失败。
-        out["verification_rate"] = 1.0 if _events(run) and verified else None
+        # runtime 给了明确 verification 事件就直接用；没有就退回「先产生、后观察」的
+        # read-back 事实。两者都没有（旧 coarse 轨迹）才是真的 N/A，不能把未知当失败。
+        out["verification_rate"] = (
+            1.0 if verified
+            else _readback_rate(run, set(expectation.get("verification_tools") or []))
+        )
     return out
 
 

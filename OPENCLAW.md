@@ -419,6 +419,43 @@ openclaw --profile skilleval agent --local --json \
 > 防呆提示：升级 OpenClaw 会让 `config_hash` 变（版本号在 adapter 的 `fingerprint()` 里），
 > 所以跨版本的结果会被自动标记为不可比 —— 这是故意的，别绕过。
 
+#### `meta.agentMeta.sessionFile` —— 逐次 tool 证据的入口
+
+`--json` 的 `meta.toolSummary` 只有聚合数（用过哪些 tool、共几次、失败几次）。
+**逐次调用不在 `--json` 里，在会话 JSONL 里**，路径由 `meta.agentMeta.sessionFile` 给出：
+
+```jsonc
+{"meta": {
+  "agentMeta": {"sessionFile": "~/.openclaw-skilleval/agents/main/sessions/<session-id>.jsonl"},
+  "toolSummary": {"calls": 5, "tools": ["read", "write"], "failures": 0}
+}}
+```
+
+那个文件里，一行一条 entry：
+
+```jsonc
+// assistant 消息：toolCall block 带 id + name + arguments
+{"type":"message","message":{"role":"assistant","content":[
+  {"type":"toolCall","id":"call_b3e8…","name":"read","arguments":{"path":"…/SKILL.md"}}]}}
+// 工具返回：靠 toolCallId 和上面配对
+{"type":"message","message":{"role":"toolResult","toolCallId":"call_b3e8…",
+  "toolName":"read","isError":false,"timestamp":1785360598609}}
+```
+
+adapter 的 `_transcript_tool_events()` 就读这个，归一成 `evidence_level="exact"` 的
+trajectory 事件 —— `argument_correctness` / `order_correctness` 能出数全靠它
+（详见 [evals/TRAJECTORY.md](evals/TRAJECTORY.md)）。三条约束：
+
+* 参数会进 `runs.jsonl` 和 judge prompt，所以 adapter 里按 `_SECRET_ARG_RE` 脱敏、
+  超 500 字符截断。**别为了"看着全"把这两条放宽**；
+* 容器模式下这个路径在容器里，要用同一个 `command_prefix` 走 `docker exec cat`；
+* 读不到 / 解析不出 → 退回 coarse toolSummary 事件。**保留 N/A，不许拿聚合数冒充逐次证据。**
+
+同一份数据也可以用 `openclaw sessions export-trajectory --session-key <key> --json`
+拿到（额外带 runtime 事件、system prompt、tool schema）。我们没走它：多一次子进程、
+多一个 bundle 目录要清理，而判参数和顺序需要的东西会话文件里已经全有了。
+真要看 prompt/tool schema 级别的东西再用它。
+
 ### 6.6 升级前后必查
 
 跨版本升级时，先确认 adapter 依赖的 CLI 接口还在：
@@ -432,6 +469,16 @@ openclaw --help | grep -q profile && echo "✓ --profile" || echo "✗ --profile
 
 2026.2 → 2026.7 这五个参数**一个没变**，adapter 零改动。auth store 倒是从
 `auth-profiles.json` 换成了 `openclaw-agent.sqlite`，healthcheck 的诊断两代都认。
+
+会话文件的结构也要一起查 —— 它变了不会报错，只会让 trajectory 静默退回 coarse
+（§6.5「一整类：静默变空」的同一种病）：
+
+```bash
+# 跑一轮，然后确认 sessionFile 还在、里面还有 toolCall/toolResult
+S=$(openclaw --profile skilleval agent --local --json --session-id fmtcheck \
+      --message "读一下 README.md 的第一行" | jq -r .meta.agentMeta.sessionFile)
+jq -r '.message.role' "$S" | sort | uniq -c   # 要看到 assistant 和 toolResult
+```
 
 ---
 

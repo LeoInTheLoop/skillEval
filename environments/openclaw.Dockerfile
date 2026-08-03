@@ -11,6 +11,7 @@
 # 下面两样都从 npm 官方 registry 拉，构建时需要联网：
 #   openclaw                  https://www.npmjs.com/package/openclaw
 #   @openclaw/qwen-provider   https://www.npmjs.com/package/@openclaw/qwen-provider
+#   @openclaw/deepseek-provider  https://www.npmjs.com/package/@openclaw/deepseek-provider
 #   基础镜像 node:24-slim     https://hub.docker.com/_/node
 # 源码（只读参考，不需要 clone）：https://github.com/openclaw/openclaw
 FROM node:24-slim
@@ -21,8 +22,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends git ca-certific
 
 RUN npm install -g openclaw@2026.7.1-2
 
-# profile 与宿主机同名，adapter 的 --profile skilleval 不用分叉
-RUN openclaw --profile skilleval plugins install @openclaw/qwen-provider
+# profile 与宿主机同名，adapter 的 --profile skilleval 不用分叉。
+# 装两家 provider：装哪家不决定用哪家 —— 用哪家由 suite 的
+# runtime_options.auth_choice + model 决定（两者都进 fingerprint）。
+RUN openclaw --profile skilleval plugins install @openclaw/qwen-provider \
+    && openclaw --profile skilleval plugins install @openclaw/deepseek-provider
 
 # 这里**故意不 onboard**。实测：onboard 会把 key 写进 profile 的 auth store，而
 # auth store 优先于环境变量 —— 拿占位 key build 出来的镜像，运行时再传真

@@ -33,33 +33,72 @@ environment.backend: docker
 
 `routing_only + LiteLLM` 只测 skill 路由，不生成执行轨迹。
 
-### 三个 N/A 的原因
+### 三个 N/A（2026-08-03 更新：三个都已解，但解法各不相同）
 
-当前 OpenClaw CLI 的 JSON 输出只有聚合 `toolSummary`：使用过哪些工具、总调用数、
-失败数。它没有逐次调用的参数、顺序和逐次返回事件。因此：
+`--json` 的 `meta` 确实只有聚合 `toolSummary`，但**逐次调用 OpenClaw 一直在写**——
+写在 `meta.agentMeta.sessionFile` 指向的会话 JSONL 里：assistant 消息带 toolCall block
+（`id` + `name` + `arguments`），toolResult 消息带 `toolCallId` / `toolName` / `isError`。
+不需要包 tool dispatch，也不需要改 OpenClaw，**我们只是之前没读那个文件**。
 
 | 维度 | 当前证据 | 当前结论 |
 | --- | --- | --- |
-| `tool_selection` | `toolSummary.tools` + case gold | 可以评估，粒度为 coarse |
-| `state_persistence` | Docker workspace 前后快照、artifact hash/size/MIME | 可以评估 |
-| `argument_correctness` | 没有逐次参数 | N/A |
-| `order_correctness` | 没有逐次事件序号 | N/A |
-| `verification_rate` | 没有明确 verification 事件 | N/A |
+| `tool_selection` | toolSummary + 会话逐次事件 | 可评估，exact |
+| `state_persistence` | Docker workspace 前后快照、artifact hash/size/MIME | 可评估 |
+| `argument_correctness` | 会话 JSONL 的逐次 `arguments`（脱敏 + 限长） | 证据到位，**缺的是 gold** |
+| `order_correctness` | 逐次事件顺序 + `call_id` 配对 | 可评估，exact |
+| `verification_rate` | 题目声明的 probe tool + read-back 顺序 | 声明了才出数，否则 N/A |
 
-这些 N/A 不是待 judge 补的分，而是**运行时观测能力缺失**。LLM judge 可以判已有
-证据的语义，不能凭空补 telemetry。
+不是推断出来的：2026-07-29 归档的 `full_example_v1.0__openclaw-default__v1`，
+会话文件里躺着完整的 5 次调用 —— `read(SKILL.md)` → `write(csv)` → `write(md)` →
+`read(csv)` → `read(md)`，参数、`call_id`、成败俱全，与 `toolSummary.calls: 5` 对得上。
+证据从那天起就在磁盘上，只是没接进 `RunResult`。
 
-### 正确解决方向：外层采集，不改 OpenClaw 核心
+结论修正：这三个 N/A，两个是**我们没接线**，一个（verification）缺的是**题目侧的定义**，
+不是运行时能力 —— 补一个 `verification_tools` 字段就够，见下。
 
-1. 检查当前 OpenClaw CLI 是否支持 JSON event/stream/verbose trace；优先通过 wrapper
-   或 runtime 参数开启。
-2. 如果 CLI 不暴露事件，使用外层 runtime adapter 的 tool-dispatch wrapper，包住
-   Docker 内的 tool 执行入口，记录调用前后事件。
-3. Docker 继续负责 workspace、文件 hash、artifact、网络和权限状态证据。
-4. OpenClaw 负责执行，Evaluator 只读取标准 `RunResult`。
+### 已落地（T1）：读 OpenClaw 自己的会话文件，不改 OpenClaw
 
-不能用最终回答、聚合 toolSummary 或 Docker 文件 mtime 猜参数和顺序，也不能让 LLM
-judge 把缺失的运行时证据判成成功。
+`adapters/runtimes/openclaw.py`：
+
+1. `_parse_meta` 多带回 `agentMeta.sessionFile`；
+2. `_read_session_file` 读它 —— 容器里用同一个 `command_prefix` 走 `docker exec cat`；
+3. `_transcript_tool_events` 归一成 `evidence_level="exact"` 的 tool_call / tool_result，
+   靠 `call_id` 配对；参数按 `_SECRET_ARG_RE` 脱敏、按 500 字符截断（会进 runs.jsonl
+   和 judge prompt，密钥不能进，整篇文件内容会把归档撑爆）；
+4. 读不到或解析不出，**退回原来的 coarse toolSummary 事件** —— 宁可保留 N/A，
+   也不能拿聚合摘要冒充逐次证据。
+
+`TrajectoryEvent` 增加 `call_id`：配对靠它，不靠数组位置或时间戳。
+
+**Docker 实跑已验收（2026-08-03，`docker-t2`）**：
+
+```text
+outcome:    task_completion 1.0  artifact_correctness 1.0
+trajectory: tool_selection 1.0  order_correctness 1.0  state_persistence 1.0
+            verification_rate 1.0  argument_correctness N/A（缺 gold，符合预期）
+→ GATE PASS
+```
+
+关键证据不是这几个数字，是它们**从哪来**：
+
+```text
+sessionFile: /root/.openclaw-skilleval/agents/main/sessions/skilleval.docker-t2.….jsonl
+事件粒度: tool_call/exact ×14, tool_result/exact ×14, state_change/derived ×4, final ×4
+事件来源: openclaw.session ×28
+```
+
+那是**容器内**路径，靠 `docker exec cat` 读回来的 —— 说明整条 T1 链路在 Docker 下成立。
+
+顺带证明了 coarse 摘要为什么不够用：某次 run 的第 11 步 `exec git commit` **失败**，
+第 13 步 agent 自己 `git config` 之后重试成功。`toolSummary` 只会报「exec 用过、失败 1 次」，
+retry/recovery 这件事只有逐次事件看得见。
+
+> ⚠️ 这次跑的是 **DeepSeek**，不是 qwen：`DASHSCOPE_API_KEY` 那个国际站账号欠费
+> （`{"type":"Arrearage"}`，宿主机直接打端点同样报错，与本仓库无关）。
+> 失败归档留在 `docker-t1` 当证据。切 provider 的做法见 §1。
+
+仍然不许：用最终回答、聚合 toolSummary 或 Docker 文件 mtime 猜参数和顺序；
+也不许让 LLM judge 把缺失的运行时证据判成成功。
 
 ### 目标事件契约
 
@@ -124,18 +163,22 @@ judge 把缺失的运行时证据判成成功。
 
 ### 三个维度如何补齐
 
-#### `argument_correctness`
+#### `argument_correctness` —— 证据已到位，卡在 gold
 
-对照 `tool_name + arguments` 与 case gold、tool schema 和 Docker precondition：必填字段、
-类型、路径/对象、禁止参数、参数值语义。没有 exact arguments 时继续 N/A，不能把 tool
-调用成功当成参数正确。
+exact arguments 现在进 `RunResult.trajectory`，也就一并进了 trajectory judge 的 prompt
+（`build_prompt` 原样喂 `run["trajectory"]`），所以**语义层面现在就能判**。
 
-#### `order_correctness`
+确定性判定还差一个 gold：`TrajectoryExpectation` 没有"这个 tool 的参数该长什么样"的字段。
+先让 judge 判，等真有题写得出参数 gold 再加字段 —— **别为一个还没有的字段先建 schema**。
+无论哪条路，都不能把"tool 调用成功"当成参数正确。
 
-使用 `step_index + call_id`，而不是时间或数组位置。检查 required order、tool call/result
-配对、依赖是否满足、失败后的 retry/recovery，以及无效循环。
+#### `order_correctness` —— 已自动出数
 
-#### `verification_rate`
+`evaluators/trajectory.py` 的 `score_structured` 早就实现了 `required_order`
+（`step_index + call_id`，不看时间和数组位置），只是以前没有 exact 事件所以永远返回 None。
+现在 evaluator 一行没改就开始出数。retry/recovery、无效循环这些更细的判定留给 judge。
+
+#### `verification_rate` —— 定义交给题目，然后就能出数
 
 只有明确的 postcondition/verification 事件才算验证：
 
@@ -148,6 +191,30 @@ verification(success)
 ```
 
 最终回答说成功、artifact 存在，都不能单独证明 Agent 做过 verification。
+
+难点从来不是拿不到数据，而是 generic 地判"哪些 tool 算 mutate、哪些算 probe"——
+那等于让 evaluator 猜 tool 语义。**解法是别猜，让题目说**：
+`TrajectoryExpectation.verification_tools` 声明哪些 tool 算观察。
+
+判定（`evaluators/trajectory.py::_readback_rate`）：对每个本次 run 真的改变过的产物路径，
+先被非 probe 调用写出、之后又被 probe 工具成功读过一次，就算验证过；
+分数 = 验证过的产物 / agent 显式写出的产物。三样输入都是事实，没有一样是猜的：
+
+| 需要判断的 | 事实来源 |
+| --- | --- |
+| 状态确实变了 | workspace 前后 diff 出来的 artifact |
+| 谁指向了这个路径 | exact `arguments`（只认参数值**以该路径结尾**，否则正文里提一句文件名就被算成读回它自己） |
+| 先写后读 | `step_index` 顺序 + `call_id` 配对 |
+
+**实测**（2026-07-29 归档那次 run，`verification_tools: ["read"]`）：
+两个产物写完都读回了 → `1.0`；把写完之后的两次 read-back 从轨迹里砍掉 → `0.0`；
+题目不声明 `verification_tools` → `None`（N/A）。反例会掉分，才说明它不是恒真的装饰。
+
+仍然记 N/A 不记 0 的三种情况：题目没声明 probe、轨迹只有 coarse 事件、这次 run 没产物。
+runtime 以后能直接给 `verification` 事件时，那个事件优先于这条推导。
+
+`required_verification: true` 却不给 `verification_tools`，contract 直接拒收 ——
+不然题目看着在要求验证，这一维却永远是 N/A。
 
 ### 数据准备
 
@@ -162,6 +229,7 @@ full case 使用通用的 `expect_trajectory`，不绑定 read/write：
     "required_order": ["inspect", "mutate"],
     "required_state_change": true,
     "required_verification": true,
+    "verification_tools": ["inspect"],
     "assertions": ["最终回答不能替代真实状态证据"]
   }
 }
@@ -176,9 +244,9 @@ full case 使用通用的 `expect_trajectory`，不绑定 read/write：
 | 阶段 | 内容 | 状态 |
 | --- | --- | --- |
 | T0 | RunResult trajectory、coarse toolSummary、Docker state diff、trajectory judge、四层 evaluator | ✅ |
-| T1 | 从 OpenClaw 外层获得 exact tool events、arguments、call_id、step_index、tool result | 待做 |
-| T2 | 用 exact events 确定性计算 argument/order/verification | 待做 |
-| T3 | 为文件、数据库、API、代码执行等 skill 增加专用 evaluator | T1/T2 后做 |
+| T1 | 从 OpenClaw 外层获得 exact tool events、arguments、call_id、step_index、tool result | ✅ 读会话 JSONL；Docker 实跑已验收（`docker-t2`） |
+| T2 | 用 exact events 确定性计算 argument/order/verification | order ✅、verification ✅（题目声明 probe）；argument 等 gold 字段 |
+| T3 | 为文件、数据库、API、代码执行等 skill 增加专用 evaluator | T2 收尾后做 |
 
 ### 验收命令
 
@@ -194,6 +262,10 @@ full case 使用通用的 `expect_trajectory`，不绑定 read/write：
 
 验收目标不是强行把 N/A 变成数字，而是：只有 OpenClaw + Docker 真实产生相应事件和
 状态证据后，才允许 `N/A → exact score`；否则保留 N/A 才是可信结果。
+
+`docker-t2` 已经把这条命令跑完并 GATE PASS，T1/T2 在 Docker 下验收完毕。
+再跑要注意：`--stages` 里的 `grade` / `trajectory` 是 judge 阶段，需要
+`JUDGE_BASE_URL` / `JUDGE_API_KEY`，目前 `.env` 里没有，所以上面只跑了确定性的 `run,score`。
 
 ---
 
@@ -415,6 +487,27 @@ repeats: 3             # 每道题实际执行次数，用来量稳定性
 
 实测可用的模型名：`qwen3.7-max-2026-05-17` ✅ ｜ `glm-5.1` ✅ ｜ `qwen3-max` ✅ ｜ `glm-4-plus` ❌
 
+### 2026-08-03：DashScope 账号欠费 → OpenClaw 侧改跑 DeepSeek
+
+`DASHSCOPE_API_KEY` 那个**国际站**账号欠费（`{"type":"Arrearage"}`）。注意这把 key
+**qwen 和 glm 共用**，所以换 suite 里的 `model:` 一行救不了，两个都跑不动；
+`/models` 目录接口仍返回 200（154 个模型），只有推理被拦——**能列模型不等于能调**。
+
+OpenClaw 侧换 provider 不用改代码，三处配置即可（adapter 早就把 `auth_choice`
+当 runtime_option，而且它进 fingerprint，所以换 provider 是可追溯的实验变更）：
+
+| 改哪 | 值 |
+| --- | --- |
+| `environments/openclaw.Dockerfile` | 加装 `@openclaw/deepseek-provider`（与 qwen 并存，装哪家 ≠ 用哪家）；重 build 换 image ID |
+| `runtime_options` | `model: deepseek/deepseek-v4-flash` + `auth_choice: deepseek-api-key` |
+| `environment.env_passthrough` | `[DEEPSEEK_API_KEY=DEEPSEEK_API_KEY]`，值从 `.env` 来 |
+
+DeepSeek 插件提供 `deepseek-v4-flash` / `deepseek-v4-pro` / `deepseek-chat` /
+`deepseek-reasoner`，走 `https://api.deepseek.com`。
+
+⚠️ 阿里云那份模型表里也有 `deepseek-v4-flash-0731`，但它走的是**同一个欠费账号**，
+实测照样 `Arrearage`——绕开欠费必须用 DeepSeek 自己的 key，不是换个模型名。
+
 ---
 
 ## 2. 三十秒验证环境没坏
@@ -584,6 +677,7 @@ V1 的 9 次拒答题全部误激活到 `pdf`，理由都在按 PDF 文件格式
 | openclaw 刷 AWS 报错 | 它会读 `~/.aws/credentials` 探 Bedrock | adapter 把 AWS 配置路径指向 `/dev/null` |
 | openclaw 配置只配了 workspace | `configure` 选 Workspace 不配任何凭据，配完仍 `missing-provider-auth` | 用 `onboard --non-interactive`，见 [OPENCLAW.md](OPENCLAW.md) §0 |
 | 测 nvm 版本测不准 | `zsh -l -c` 不读 .zshrc；`zsh -i -c` 继承父 PATH | 必须 `env -i` 才等价于新终端 |
+| **provider 欠费被记成 network** | 容器里 `FailoverError: HTTP 400 ... Arrearage`，四题全挂，看着像上游抖动 | 分类是对的（外部服务不可用），但**先拿宿主机直接打一次端点**再查代码：同样报错就是账号问题，别在 adapter 里找 |
 
 ---
 

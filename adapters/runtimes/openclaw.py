@@ -102,6 +102,31 @@ _BOOTSTRAP_FILES = frozenset({
     "TOOLS.md", "USER.md", "openclaw-workspace-state.json",
 })
 
+# `--json` 的 meta 只有聚合 toolSummary，但 OpenClaw 自己把逐次调用写进了会话
+# JSONL（`meta.agentMeta.sessionFile`）：assistant 消息里带 toolCall block
+# （id + name + arguments），toolResult 消息里带 toolCallId/toolName/isError。
+# 这就是 exact 级证据，不需要包 tool dispatch，也不需要改 OpenClaw。
+_TOOL_CALL_BLOCKS = frozenset({"toolcall", "tooluse", "functioncall"})
+
+# 参数会原样进 runs.jsonl 和 judge prompt：密钥必须脱敏，整篇文件内容必须截断。
+_SECRET_ARG_RE = re.compile(
+    r"(?i)(api[-_]?key|access[-_]?token|token|secret|password|passwd|credential"
+    r"|authorization|cookie|session[-_]?key)")
+_ARG_VALUE_LIMIT = 500
+
+
+def _sanitize_arguments(value):
+    """脱敏 + 限长；结构保留，判参数正确性靠的是路径/字段名这些短值。"""
+    if isinstance(value, dict):
+        return {k: "<redacted>" if _SECRET_ARG_RE.search(str(k)) else _sanitize_arguments(v)
+                for k, v in value.items()}
+    if isinstance(value, list):
+        # ponytail: 长列表截到 20 项。真遇到需要判第 21 个参数的题再放宽。
+        return [_sanitize_arguments(v) for v in value[:20]]
+    if isinstance(value, str) and len(value) > _ARG_VALUE_LIMIT:
+        return value[:_ARG_VALUE_LIMIT] + f"…[truncated at {_ARG_VALUE_LIMIT} of {len(value)} chars]"
+    return value
+
 
 @register("openclaw")
 class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
@@ -218,18 +243,20 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
     def _parse_meta(stdout: str) -> dict:
         """从 --json 的 meta 里挖出归一化需要的东西（2026.7.x 结构）。
 
-        OpenClaw 只给**聚合的** toolSummary（用了哪些 tool、共几次、失败几次），
-        拿不到逐次调用的参数和返回 —— 所以 ToolCall.arguments 只能留空。
-        给不出来的就留空，不要为了字段好看去编。
+        `--json` 的 meta 只给**聚合的** toolSummary（用了哪些 tool、共几次、失败几次），
+        所以 ToolCall.arguments 留空。逐次的参数与顺序不在这里，在
+        `agentMeta.sessionFile` 指向的会话 JSONL 里 —— 见 `_transcript_tool_events`。
         """
         out: dict = {"tool_calls": [], "loaded_skills": [], "usage": {},
-                     "resolved_model": None}
+                     "resolved_model": None, "session_file": None}
         try:
             meta = (json.loads(stdout) or {}).get("meta") or {}
         except json.JSONDecodeError:
             return out
 
         agent = meta.get("agentMeta") or {}
+        if isinstance(agent.get("sessionFile"), str):
+            out["session_file"] = agent["sessionFile"]
         if agent.get("model"):
             out["resolved_model"] = f"{agent.get('provider', '?')}/{agent['model']}"
         u = agent.get("usage") or {}
@@ -253,6 +280,81 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
         out["loaded_skills"] = [e["name"] for e in skills
                                 if isinstance(e, dict) and isinstance(e.get("name"), str)]
         return out
+
+    def _read_session_file(self, request: InvocationRequest, path: str) -> str:
+        """读会话 JSONL；容器里的会话文件要用同一个 command_prefix 进容器拿。"""
+        prefix = (request.environment.command_prefix
+                  if request.environment else []) or []
+        if prefix:
+            p = subprocess.run([*prefix, "cat", path], capture_output=True,
+                               text=True, timeout=120, env=self._env())
+            return p.stdout if p.returncode == 0 else ""
+        try:
+            return Path(path).read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            return ""
+
+    @staticmethod
+    def _transcript_tool_events(transcript: str) -> list[TrajectoryEvent]:
+        """把会话 JSONL 里的逐次 tool 调用/结果归一成 **exact** 事件。
+
+        这是 argument_correctness / order_correctness 从 N/A 变成可判的唯一依据：
+        toolCall block 带 id + name + arguments，toolResult 带 toolCallId + isError，
+        配对靠 call_id 而不是数组位置。解析不出来就返回空，让调用方退回 coarse ——
+        **宁可保留 N/A，也不能拿聚合摘要冒充逐次证据**。
+
+        ponytail: 一个 request 一个 session，所以整份 transcript 就是这一轮。
+        接多轮编排（P5）后要按 turn 切，否则第 2 轮会带上第 1 轮的事件。
+        """
+        events: list[TrajectoryEvent] = []
+
+        def _add(**kwargs) -> None:
+            events.append(TrajectoryEvent(step_index=len(events) + 1,
+                                          evidence_level="exact",
+                                          metadata={"source": "openclaw.session"},
+                                          **kwargs))
+
+        for line in transcript.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                entry = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(entry, dict) or entry.get("type") != "message":
+                continue
+            message = entry.get("message")
+            if not isinstance(message, dict):
+                continue
+            role = message.get("role")
+            if role == "assistant":
+                for block in message.get("content") or []:
+                    if not isinstance(block, dict):
+                        continue
+                    if str(block.get("type") or "").strip().lower() not in _TOOL_CALL_BLOCKS:
+                        continue
+                    name = block.get("name")
+                    if not isinstance(name, str) or not name:
+                        continue
+                    args = (block.get("arguments") if isinstance(block.get("arguments"), dict)
+                            else block.get("input") if isinstance(block.get("input"), dict)
+                            else block.get("parameters"))
+                    _add(event_type="tool_call", name=name, tool_name=name,
+                         call_id=block.get("id") if isinstance(block.get("id"), str) else None,
+                         arguments=_sanitize_arguments(args) if isinstance(args, dict) else None,
+                         status="started")
+            elif role == "toolResult":
+                name = message.get("toolName")
+                if not isinstance(name, str) or not name:
+                    continue
+                ts = message.get("timestamp")
+                _add(event_type="tool_result", name=name, tool_name=name,
+                     call_id=(message.get("toolCallId")
+                              if isinstance(message.get("toolCallId"), str) else None),
+                     status="failed" if message.get("isError") else "success",
+                     timestamp_ms=ts if isinstance(ts, int) and ts >= 0 else None)
+        return events
 
     def _workspace_dir(self, request: InvocationRequest | None = None) -> Path | None:
         """OpenClaw 的 workspace，artifact 就在这里面产生。"""
@@ -594,22 +696,24 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
 
         meta = self._parse_meta(p.stdout)
         artifacts = self._diff_artifacts(before, self._snapshot(ws), ws)
-        # OpenClaw 当前 CLI 只暴露聚合 toolSummary：这里仅生成 coarse 事件，
-        # 明确不能用于 argument/order 的精确评分。以后 runtime 暴露逐次事件时，
-        # 直接填 RunResult.trajectory 即可替换，不改 evaluator。
-        trajectory: list[TrajectoryEvent] = []
-        step = 1
-        for tool in meta["tool_calls"]:
-            trajectory.append(TrajectoryEvent(
-                step_index=step,
-                event_type="tool_call",
-                name=tool.name,
-                tool_name=tool.name,
-                status="unknown",
-                evidence_level="coarse",
-                metadata={"source": "openclaw.toolSummary", "count": tool.count},
-            ))
-            step += 1
+        # 优先用会话 JSONL 的逐次事件（exact）；读不到才退回聚合 toolSummary
+        # （coarse，明确不能用于 argument/order 评分）。
+        trajectory = self._transcript_tool_events(
+            self._read_session_file(request, meta["session_file"])
+            if meta["session_file"] else "")
+        step = len(trajectory) + 1
+        if not trajectory:
+            for tool in meta["tool_calls"]:
+                trajectory.append(TrajectoryEvent(
+                    step_index=step,
+                    event_type="tool_call",
+                    name=tool.name,
+                    tool_name=tool.name,
+                    status="unknown",
+                    evidence_level="coarse",
+                    metadata={"source": "openclaw.toolSummary", "count": tool.count},
+                ))
+                step += 1
         for artifact in artifacts:
             trajectory.append(TrajectoryEvent(
                 step_index=step,
