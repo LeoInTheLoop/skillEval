@@ -179,6 +179,62 @@ suite 声明了 runtime 不支持的能力（例如让 `litellm` 跑 `full`、�
 
 新增 runtime：在 `adapters/runtimes/` 下写个类，加 `@register("名字")`，在 `__init__.py` 的 `_AUTOLOAD` 里列上 —— 工厂本身不用改。
 
+### full eval 首次运行：先做 one-case baseline
+
+只要准备的是一套新的 `skills.mode: full` 实验，**第一次真实运行必须先用一
+道人工审核过的 case 跑通，作为 baseline**，再扩展到完整题集。这里的目标是验证
+执行环境和 full 链路，而不是提前评价 skill 的整体质量：
+
+```text
+dataset → plan/healthcheck → OpenClaw 注入 → skill 加载 → tool → artifact → score
+```
+
+baseline case 建议选择最短的 happy path，并且至少声明一个可确定性验收的
+`expect_tools` 或 `expect_artifacts`；如果需要验证拒答，再另外做一条拒答题，
+不要把“没有任何断言”的题当成基线。首次 baseline 建议固定：
+
+- `repeats: 1`
+- `parallelism: 1`
+- 不启用 judge（先跑 `run,score`）
+- 使用独立的 `full_<skill>_baseline_v0.1.jsonl` 和
+  `full_<skill>_baseline_v1.yaml`
+
+不要在完整 dataset 上临时删行，也不要增加 `--case-id` 之类的 CLI 覆盖。dataset
+是实验输入，必须有自己的路径、content hash 和 run 快照；这样 baseline 才能在
+后续完整 run 或 V1/V2 对照中被准确复述。
+
+最小 baseline case：
+
+```jsonl
+# review_status: APPROVED — manually reviewed one-case baseline
+{"id":"<skill>-baseline-pos-01","prompt":"<最短的真实业务任务>","expected_skills":["<skill>"],"expect_tools":["write"],"expect_artifacts":["out/result.md"],"tags":["full","baseline"],"severity":"high"}
+```
+
+对应 suite 只需要把 `dataset:` 指向这份一题数据，并将 `repeats` 和
+`parallelism` 设为 1。运行顺序固定为：
+
+```bash
+.venv/bin/python -m pipeline plan \
+  --suite evals/suites/full_<skill>_baseline_v1.yaml \
+  --healthcheck
+
+.venv/bin/python -m pipeline run \
+  --suite evals/suites/full_<skill>_baseline_v1.yaml \
+  --confirm --confirm-egress
+```
+
+只有同时满足以下条件，才把 baseline 标记为通过并开始扩题：`plan` 无阻塞、
+run 产生 `runs.jsonl`、目标 skill 被加载、声明的 tool 被调用、声明的 artifact
+存在且非空、`scores.json` 成功生成。若失败，先修环境、tool policy、输入挂载或
+skill 注入问题；不要直接扩大题量。
+
+baseline 不等于 No-Skill 对照，也不等于正式质量结论。正式 full eval 仍应新建或
+使用完整版本化 dataset，并保持 suite 其余条件一致；baseline run 目录保留不覆盖。
+这条是当前的运行流程门槛，由人工在 `plan` 和 `scores.json` 上确认，暂不由 runner
+强制拦截；仓库里已经验证过的 `example_full.yaml` 是保留的两题公共 smoke 示例。
+如果以后要机器强制执行，应该新增 suite 中的 `pipeline.baseline` 声明并把它纳入
+快照/hash，而不是添加一个不入配置的 `--case-id` 临时参数。
+
 ### routing_input：两级路由怎么切
 
 第一阶段先用 `direct`：模型只看 N 个 skill metadata 和当前问题。这一层快，适合反复修改
