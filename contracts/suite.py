@@ -14,6 +14,7 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .runtime import NetworkMode, SkillMode
+from .trajectory import TRAJECTORY_DIMENSIONS
 from .skill import VERSION_DIR
 
 _ENV_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
@@ -183,12 +184,55 @@ class SuiteJudgeSpec(_StrictModel):
         return self
 
 
+class SuiteTrajectorySpec(_StrictModel):
+    """Trajectory evaluator 配置。
+
+    第一阶段默认走独立 judge；后续可把 ``mode`` 扩成 deterministic/hybrid，
+    但不需要改 suite 的调用方或 evaluator 工厂。
+    """
+
+    enabled: bool = False
+    mode: Literal["judge", "deterministic", "hybrid"] = "judge"
+    judge_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+$")
+    dimensions: list[str] = Field(default_factory=lambda: list(TRAJECTORY_DIMENSIONS))
+    version: str = "trajectory-v1"
+
+    @model_validator(mode="after")
+    def _known_dimensions(self) -> "SuiteTrajectorySpec":
+        unknown = [d for d in self.dimensions if d not in TRAJECTORY_DIMENSIONS]
+        if unknown:
+            raise ValueError(
+                f"未知的 trajectory 维度 {unknown}；可用：{list(TRAJECTORY_DIMENSIONS)}"
+            )
+        if len(self.dimensions) != len(set(self.dimensions)):
+            raise ValueError("scoring.trajectory.dimensions 不能重复")
+        return self
+
+
 class SuiteScoringSpec(_StrictModel):
     metrics: list[str] = Field(min_length=1)
+    evaluators: list[str] = Field(
+        default_factory=lambda: ["outcome", "trajectory", "reliability", "efficiency"]
+    )
     gate: dict[str, str] = Field(default_factory=dict)
     # 不写 = 不做语义判定，只跑确定性断言。默认关闭是有意的：
     # 每开一次就是一次真实外发 + 一笔钱 + 一个不完全可复现的数字。
     judge: SuiteJudgeSpec | None = None
+    trajectory: SuiteTrajectorySpec = Field(default_factory=SuiteTrajectorySpec)
+
+    @model_validator(mode="after")
+    def _trajectory_requires_judge(self) -> "SuiteScoringSpec":
+        if self.trajectory.enabled and self.trajectory.mode in {"judge", "hybrid"}:
+            if self.judge is None:
+                raise ValueError(
+                    "scoring.trajectory 启用 judge/hybrid 时必须配置 scoring.judge"
+                )
+            if self.trajectory.judge_id and self.trajectory.judge_id != self.judge.id:
+                raise ValueError(
+                    "scoring.trajectory.judge_id 必须与 scoring.judge.id 相同；"
+                    "换量具请同时换 id"
+                )
+        return self
 
     @model_validator(mode="after")
     def _valid_gate(self) -> "SuiteScoringSpec":
@@ -201,6 +245,14 @@ class SuiteScoringSpec(_StrictModel):
             raise ValueError(f"gate 条件必须是 '>= 0..1' 或 '<= 0..1'，非法项：{invalid}")
         if len(self.metrics) != len(set(self.metrics)):
             raise ValueError("scoring.metrics 不能重复")
+        if len(self.evaluators) != len(set(self.evaluators)):
+            raise ValueError("scoring.evaluators 不能重复")
+        from evaluators import available
+        unknown_evaluators = sorted(set(self.evaluators) - set(available()))
+        if unknown_evaluators:
+            raise ValueError(
+                f"未知 evaluator {unknown_evaluators}；可用：{available()}"
+            )
         return self
 
 
@@ -227,6 +279,42 @@ def _find_inline_secret(value: Any, path: str = "suite") -> str | None:
 
 class RoutingSuite(_StrictModel):
     """当前 routing walking-skeleton 的完整声明式配置。"""
+
+    @model_validator(mode="before")
+    @classmethod
+    def _full_eval_defaults(cls, data: Any) -> Any:
+        """Make full evals safe-by-default without changing routing suites.
+
+        Full mode executes an agent loop and can touch files, so its implicit
+        execution boundary is Docker + OpenClaw.  Keep every value overridable
+        for deliberate comparisons, while making a minimal full suite usable
+        after the caller exports ``SKILLEVAL_OPENCLAW_IMAGE``.
+        """
+        if not isinstance(data, dict):
+            return data
+
+        skills = data.get("skills")
+        if not isinstance(skills, dict) or skills.get("mode") != "full":
+            return data
+
+        resolved = dict(data)
+        resolved.setdefault("runtime", "openclaw")
+
+        runtime_options = dict(resolved.get("runtime_options") or {})
+        runtime_options.setdefault("bin", "openclaw")
+        runtime_options.setdefault("profile", "skilleval")
+        resolved["runtime_options"] = runtime_options
+
+        # An explicit environment remains authoritative.  The default image
+        # is supplied through an env var because suite files must not contain
+        # machine-specific image IDs.
+        if not resolved.get("environment"):
+            resolved["environment"] = {
+                "backend": "docker",
+                "image_env": "SKILLEVAL_OPENCLAW_IMAGE",
+                "network": "full",
+            }
+        return resolved
 
     suite_id: str = Field(min_length=1, pattern=r"^[A-Za-z0-9_.-]+$")
     suite_version: str = Field(min_length=1)
@@ -262,6 +350,23 @@ class RoutingSuite(_StrictModel):
             missing = [model.id for model in self.models if model.model is None]
             if missing:
                 raise ValueError(f"litellm 的 model 条目必须声明 model：{missing}")
+
+        # 四层 execution evaluation 的事实来源必须是完整 agent loop：
+        # OpenClaw 在 Docker 中运行，RunResult 再交给 evaluator。routing-only/LiteLLM
+        # 没有工具调用和 workspace 状态，不能伪装成 trajectory/full 结果。
+        if self.scoring.trajectory.enabled:
+            if self.skills.mode != "full":
+                raise ValueError(
+                    "scoring.trajectory 只能用于 skills.mode=full；routing-only 没有执行轨迹"
+                )
+            if self.runtime != "openclaw":
+                raise ValueError(
+                    "scoring.trajectory 的执行来源必须是 runtime=openclaw"
+                )
+            if self.environment.backend != "docker":
+                raise ValueError(
+                    "scoring.trajectory 的执行来源必须是 environment.backend=docker"
+                )
 
         secret_path = _find_inline_secret(self.model_dump(mode="python"))
         if secret_path:

@@ -115,6 +115,7 @@ class PipelinePlan:
     timeout_seconds: int
     tools: list[str]
     scoring_metrics: list[str]
+    evaluation_layers: list[str]
     gate: dict[str, str]
     stages: list[dict[str, str]]
     models: list[PlannedModel]
@@ -161,6 +162,15 @@ def _stage_plan(suite: dict[str, Any]) -> list[dict[str, str]]:
                 "name": "grade (optional)",
                 "module": "workflows.grade",
                 "detail": "independent judge; external model call, so never enabled by default",
+            }
+        )
+    trajectory = (suite.get("scoring", {}).get("trajectory") or {})
+    if trajectory.get("enabled"):
+        stages.append(
+            {
+                "name": "trajectory grade (optional)",
+                "module": "workflows.grade_trajectory",
+                "detail": "generic trajectory judge; unavailable event granularity remains N/A",
             }
         )
     return stages
@@ -555,6 +565,8 @@ def build_plan(
         timeout_seconds=suite["timeout_seconds"],
         tools=list(suite.get("tools") or []),
         scoring_metrics=list(suite["scoring"]["metrics"]),
+        evaluation_layers=list(suite["scoring"].get("evaluators") or
+                               ["outcome", "trajectory", "reliability", "efficiency"]),
         gate=dict(suite["scoring"].get("gate") or {}),
         stages=_stage_plan(suite),
         models=models,
@@ -600,7 +612,8 @@ def render_plan(plan: PipelinePlan) -> str:
         f"{plan.turns} turns; parallelism={plan.parallelism}; "
         f"timeout={plan.timeout_seconds}s per turn; "
         f"tools={plan.tools or '(none)'}",
-        f"scoring: metrics={plan.scoring_metrics}; gate={plan.gate or '(none)'}",
+        f"scoring: metrics={plan.scoring_metrics}; layers={plan.evaluation_layers}; "
+        f"gate={plan.gate or '(none)'}",
         "",
         "models and outputs (results always live under project outputs/, not inside a skill source):",
     ])

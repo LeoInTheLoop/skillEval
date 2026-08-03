@@ -35,6 +35,7 @@ from contracts import (
     RuntimeCapabilities,
     RuntimeHealth,
     ToolCall,
+    TrajectoryEvent,
 )
 
 from adapters.routing_inputs import create_routing_input
@@ -592,6 +593,43 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
             reason = None
 
         meta = self._parse_meta(p.stdout)
+        artifacts = self._diff_artifacts(before, self._snapshot(ws), ws)
+        # OpenClaw 当前 CLI 只暴露聚合 toolSummary：这里仅生成 coarse 事件，
+        # 明确不能用于 argument/order 的精确评分。以后 runtime 暴露逐次事件时，
+        # 直接填 RunResult.trajectory 即可替换，不改 evaluator。
+        trajectory: list[TrajectoryEvent] = []
+        step = 1
+        for tool in meta["tool_calls"]:
+            trajectory.append(TrajectoryEvent(
+                step_index=step,
+                event_type="tool_call",
+                name=tool.name,
+                tool_name=tool.name,
+                status="unknown",
+                evidence_level="coarse",
+                metadata={"source": "openclaw.toolSummary", "count": tool.count},
+            ))
+            step += 1
+        for artifact in artifacts:
+            trajectory.append(TrajectoryEvent(
+                step_index=step,
+                event_type="state_change",
+                name="workspace_state_change",
+                status="success",
+                evidence_level="derived",
+                evidence_refs=[artifact.path],
+                state_after={"path": artifact.path, "sha256": artifact.sha256,
+                             "size_bytes": artifact.size_bytes,
+                             "change": artifact.change},
+            ))
+            step += 1
+        trajectory.append(TrajectoryEvent(
+            step_index=step,
+            event_type="final",
+            name="final_answer",
+            status="success",
+            evidence_level="exact",
+        ))
         return RunResult(
             case_id=request.case_id, repeat_index=request.repeat_index,
             model=str(request.model.get("id", "openclaw")),
@@ -599,8 +637,9 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
             final_answer=text if request.skill_mode == "full" else None,
             raw_output=p.stdout,
             tool_calls=meta["tool_calls"],
+            trajectory=trajectory,
             loaded_skills=meta["loaded_skills"],
-            artifacts=self._diff_artifacts(before, self._snapshot(ws), ws),
+            artifacts=artifacts,
             usage=meta["usage"],
             resolved_model=meta["resolved_model"],
         )

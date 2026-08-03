@@ -11,6 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .context import RoutingContext
 from .skill import SkillMeta
+from .trajectory import TrajectoryEvent
 
 SkillMode = Literal["none", "routing_only", "full"]
 RunStatus = Literal[
@@ -162,6 +163,9 @@ class RunResult(BaseModel):
 
     # --- full eval 才有内容；routing-only 恒为空（§18.1 明令不得调 tool）---
     tool_calls: list[ToolCall] = Field(default_factory=list)
+    # 事件级轨迹。旧 runtime 只有聚合 toolSummary 时保持为空或写 coarse 事件，
+    # 不允许把聚合信息伪装成逐次参数/顺序。
+    trajectory: list[TrajectoryEvent] = Field(default_factory=list)
     artifacts: list[Artifact] = Field(default_factory=list)
     # 本轮结束时 workspace 里仍存在的全部业务文件路径。artifact 只表示本轮变化，
     # 无法证明上一轮未修改的文件还在；多轮文件延续指标读取这里。

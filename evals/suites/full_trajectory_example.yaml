@@ -1,0 +1,54 @@
+suite_id: full_trajectory_example
+suite_version: "1.0"
+description: Full eval with generic trajectory judge and deterministic outcome checks
+
+dataset: evals/datasets/trajectory_deliverable-pack_v1.0.jsonl
+
+runtime: openclaw
+runtime_options:
+  bin: openclaw
+  profile: skilleval
+
+environment:
+  backend: docker
+  image_env: SKILLEVAL_OPENCLAW_IMAGE
+  network: full
+  cpus: 2
+  memory: 2g
+  env_passthrough: [QWEN_API_KEY=DASHSCOPE_API_KEY]
+
+skills:
+  dir: subjects
+  target: [deliverable-pack]
+  include: [deliverable-pack]
+  mode: full
+  cfg: v1
+
+models:
+  - id: openclaw-default
+
+tools: ["*"]
+repeats: 2
+parallelism: 1
+timeout_seconds: 600
+
+scoring:
+  evaluators: [outcome, trajectory, reliability, efficiency]
+  metrics: [task_completion, artifact_hit, tool_hit, tool_selection, state_persistence]
+  gate:
+    task_completion: ">= 0.80"
+    artifact_hit: ">= 0.80"
+    tool_selection: ">= 0.80"
+  trajectory:
+    enabled: true
+    mode: judge
+    judge_id: glm5
+    dimensions: [tool_selection, argument_correctness, order_correctness, state_persistence, verification_rate]
+  judge:
+    id: glm5
+    model: openai/glm-5.1
+    api_base_env: JUDGE_BASE_URL
+    api_key_env: JUDGE_API_KEY
+    params:
+      temperature: 0
+    dimensions: [faithfulness, completeness, relevancy]

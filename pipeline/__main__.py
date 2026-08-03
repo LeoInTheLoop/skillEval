@@ -33,9 +33,11 @@ def _run_command(command: list[str]) -> None:
 
 def _parse_stages(value: str) -> set[str]:
     stages = {item.strip() for item in value.split(",") if item.strip()}
-    unknown = stages - {"run", "grade", "score"}
+    unknown = stages - {"run", "grade", "trajectory", "score"}
     if unknown:
-        raise SystemExit(f"unknown pipeline stages: {sorted(unknown)}; choose run,grade,score")
+        raise SystemExit(
+            f"unknown pipeline stages: {sorted(unknown)}; choose run,grade,trajectory,score"
+        )
     if not stages:
         raise SystemExit("--stages cannot be empty")
     return stages
@@ -93,7 +95,7 @@ def main() -> None:
     run_parser.add_argument(
         "--stages",
         default="run,score",
-        help="comma-separated: run,grade,score (default: run,score). grade calls the "
+        help="comma-separated: run,grade,trajectory,score (default: run,score). grade calls the "
              "suite's independent judge — a paid external call, so it is opt-in; it always "
              "runs before score regardless of the order written here",
     )
@@ -277,6 +279,17 @@ def main() -> None:
             if model.credential == "missing":
                 continue
             _run_command([sys.executable, "-m", "workflows.grade",
+                          "--dir", str(ROOT / model.result_dir)])
+    if "trajectory" in stages:
+        if not any(stage["module"] == "workflows.grade_trajectory" for stage in plan.stages):
+            raise SystemExit(
+                "refusing trajectory grade: suite 没有启用 scoring.trajectory；"
+                "请在 suite 中设置 enabled: true"
+            )
+        for model in plan.models:
+            if model.credential == "missing":
+                continue
+            _run_command([sys.executable, "-m", "workflows.grade_trajectory",
                           "--dir", str(ROOT / model.result_dir)])
     if "score" in stages:
         scorer = "workflows.score_full" if plan.skill_mode == "full" else "workflows.score_routing"

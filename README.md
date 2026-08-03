@@ -50,6 +50,7 @@ outputs/routing_example_v1.0__mock__v1/<execution-id>/
 ├── config.snapshot.yaml
 ├── inputs/
 ├── runs.jsonl
+├── trajectory.jsonl
 ├── scores.json
 └── report.html
 ```
@@ -457,7 +458,9 @@ outputs/<dataset>__<model>__<skillcfg>/<execution-id>/
 ├── config.snapshot.yaml     # suite、hash、runtime/environment、resolved versions
 ├── inputs/                  # 实际 dataset 与 SKILL.md 副本
 ├── runs.jsonl               # 不可变原始结果
+├── trajectory.jsonl         # 可观察执行事件投影
 ├── grading.<judge-id>.json  # 可选语义评分
+├── trajectory_grading.<judge-id>.json # 可选通用轨迹 judge
 ├── scores.json
 └── report.html
 ```
@@ -585,7 +588,9 @@ Runtime Adapter
       ↓
 RunResult
       ↓
-Deterministic scorer / optional judge
+Evaluator factory
+      ↓
+Outcome / Trajectory / Reliability / Efficiency
       ↓
 scores.json + report.html + regression delta
 ```
@@ -595,6 +600,7 @@ scores.json + report.html + regression delta
 | [evals/AUTHORING.md](evals/AUTHORING.md) | 写题、命名、版本、gold 和人工审核 |
 | [evals/RUNBOOK.md](evals/RUNBOOK.md) | suite、运行、对照、产物与归档 |
 | [evals/CASEGEN.md](evals/CASEGEN.md) | 自动出题和改进建议的人审规范 |
+| [evals/TRAJECTORY.md](evals/TRAJECTORY.md) | 通用 trajectory 数据、四层指标和 judge |
 | [OPENCLAW.md](OPENCLAW.md) | OpenClaw 从零配置、健康检查、Docker 与排障 |
 | [AGENTS.md](AGENTS.md) | 完整架构、阶段验收标准和未完成项 |
 
@@ -607,6 +613,7 @@ adapters/routing_inputs/    direct / production_context
 environments/               local / docker
 pipeline/                   init / plan / run / archive / unarchive
 workflows/                  执行、评分、judge、compare、suggest
+evaluators/                 outcome / trajectory / reliability / efficiency 注册表
 tests/                      回归与契约测试
 ```
 

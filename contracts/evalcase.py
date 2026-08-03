@@ -12,6 +12,7 @@ from typing import Iterable, Literal
 from pydantic import BaseModel, ConfigDict, Field
 
 from .context import RoutingContext
+from .trajectory import TrajectoryExpectation
 
 Severity = Literal["low", "medium", "high", "critical"]
 CaseType = Literal["pos", "amb", "rej", "multi"]
@@ -42,6 +43,7 @@ class FullEvalTurn(BaseModel):
     # 该轮问题故意省略前文细节，必须依赖 session 历史才能完成。
     # 确定性指标按本轮 task completion 计算，不让 LLM 自评“我记住了”。
     requires_context: bool = False
+    expect_trajectory: TrajectoryExpectation | None = None
 
 
 class RoutingCase(BaseModel):
@@ -90,6 +92,7 @@ class RoutingCase(BaseModel):
     turns: list[FullEvalTurn] = Field(default_factory=list)
     expect_workspace_files: list[str] = Field(default_factory=list)
     requires_context: bool = False
+    expect_trajectory: TrajectoryExpectation | None = None
 
     @property
     def case_type(self) -> str:
@@ -119,6 +122,7 @@ class RoutingCase(BaseModel):
             reference=self.reference,
             expect_workspace_files=self.expect_workspace_files,
             requires_context=self.requires_context,
+            expect_trajectory=self.expect_trajectory,
         )
 
     @property

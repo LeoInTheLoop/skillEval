@@ -23,6 +23,8 @@ from sklearn.metrics import classification_report, confusion_matrix
 
 from workflows import metrics
 from contracts import load_cases
+from evaluators import EvaluationContext, evaluate_all
+from evaluators.trajectory import write_trajectory_projection
 from workflows.diagnostics import failure_summary
 from workflows.grade import load_grading
 
@@ -189,6 +191,7 @@ def main() -> None:
             "y_true": top1(c.expected_skills),
             "y_pred": top1(r["selected_skills"]),
         })
+    write_trajectory_projection(d, all_runs)
     df = pd.DataFrame(rows)
     failures = failure_summary(all_runs)
     if df.empty:
@@ -307,6 +310,31 @@ def main() -> None:
     if judge and grading.get("total"):
         print(f"\nassertion_pass_rate {scores['assertion_pass_rate']:.1%} "
               f"— judge {judge['id']}，{grading['total']} 条断言")
+
+    layer_context = EvaluationContext(
+        suite=suite, snapshot=snap, cases=cases, runs=all_runs,
+        scores=scores,
+        rows=[{**row, "done": row.get("exact"), "skipped": False} for row in rows],
+    )
+    evaluator_names = (suite.get("scoring", {}).get("evaluators")
+                       or ["outcome", "trajectory", "reliability", "efficiency"])
+    layers = evaluate_all(evaluator_names, layer_context)
+    trajectory_cfg = (suite.get("scoring", {}).get("trajectory") or {})
+    if trajectory_cfg.get("enabled") and "trajectory" in layers:
+        trajectory_judge_id = trajectory_cfg.get("judge_id") or (judge or {}).get("id")
+        if trajectory_judge_id:
+            trajectory_path = d / f"trajectory_grading.{trajectory_judge_id}.json"
+            if trajectory_path.exists():
+                trajectory_report = json.loads(trajectory_path.read_text(encoding="utf-8"))
+                layers["trajectory"]["judge"] = trajectory_report.get("judge")
+                layers["trajectory"]["metrics"] = trajectory_report.get("dimension_means", {})
+                layers["trajectory"]["graded"] = len(trajectory_report.get("graded") or [])
+    for layer in ("outcome", "trajectory"):
+        if layer in layers:
+            scores.update(layers[layer].get("metrics") or {})
+    print("\n四层评估视图：")
+    for layer_name, layer in layers.items():
+        print(f"  {layer_name}: {layer.get('metrics', {})}")
     # gate 里配了但值为 None 的维度要 SKIP，不能按 0 判 FAIL（AGENTS.md ★★★ ③）。
     # 典型场景：gate 写了 assertion_pass_rate 但这次没跑 grade.py。
     gate_cfg = suite.get("scoring", {}).get("gate", {}) or {}
@@ -362,8 +390,10 @@ def main() -> None:
         "model": snap.get("resolved_model", {}).get("id"),
         "n_cases": int(n_cases), "n_runs": int(attempted), "n_evaluable_runs": int(total),
         "scores": scores,
+        "evaluation": layers,
         "failure_summary": failures,
         "judge": judge,          # 这批 assertion 分是谁判的；没跑 grade.py 就是 None
+        "trajectory_judge": layers.get("trajectory", {}).get("judge"),
         "stability": {"exact_set_match": stability, "per_repeat": per_repeat},
         "efficiency": efficiency,
         "flaky_cases": flaky,
@@ -398,6 +428,11 @@ def main() -> None:
         f"<p><b>Exact skill-set match {exact_match:.1%}</b> | Top-1 {top1_acc:.1%} | "
         f"Multi exact {multi_acc:.1%} | No-Skill rejection {reject_acc:.1%} | "
         f"False activation {false_act:.1%}</p>",
+        "<p>trajectory.jsonl 保存本次运行的可观察事件投影；原始事实仍在 runs.jsonl。</p>",
+        "".join(
+            f"<h3>{name.title()} 层</h3><pre>{json.dumps(layer.get('metrics', {}), ensure_ascii=False, indent=2)}</pre>"
+            for name, layer in layers.items()
+        ),
     ]
     if gate_rows or na:
         html += [f"<h3>发布门槛 — {'QUALITY VERDICT' if is_mock else 'GATE'} {verdict}</h3>",

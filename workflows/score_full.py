@@ -27,6 +27,8 @@ import yaml
 
 from workflows import metrics
 from contracts import load_cases
+from evaluators import EvaluationContext, evaluate_all
+from evaluators.trajectory import write_trajectory_projection
 from workflows.grade import load_grading
 from workflows.score_routing import check_gate, describe_dimension, latest_run_dir, warn_uncalibrated
 
@@ -218,6 +220,7 @@ def main() -> None:
 
     runs = [json.loads(l) for l in
             (d / "runs.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
+    write_trajectory_projection(d, runs)
     rows = [score_run(r, cases[r["case_id"]], catalog) for r in runs]
     all_df = pd.DataFrame(rows)
     if all_df.empty:
@@ -264,7 +267,38 @@ def main() -> None:
         print("  ⚠️ 换 judge 或改 rubric 这些数就会变，不同尺子之间不可比")
     if judge and grading.get("total"):
         print(f"\n  assertion_pass_rate 由 judge {judge['id']} 判定，"
-              f"{grading['total']} 条断言")
+                  f"{grading['total']} 条断言")
+
+    # 四层报告视图：旧 scores 字段保持兼容，新增 evaluation 由注册表组装。
+    layer_context = EvaluationContext(
+        suite=suite, snapshot=snap, cases=cases, runs=runs,
+        # reliability 不把 runtime/network/harness failure 算成 skill 失败；
+        # efficiency 仍消费完整 runs，保留系统耗时和错误成本。
+        scores=scores, rows=df.to_dict(orient="records"),
+    )
+    evaluator_names = (suite.get("scoring", {}).get("evaluators")
+                       or ["outcome", "trajectory", "reliability", "efficiency"])
+    layers = evaluate_all(evaluator_names, layer_context)
+    trajectory_cfg = (suite.get("scoring", {}).get("trajectory") or {})
+    trajectory_judge = None
+    if trajectory_cfg.get("enabled") and "trajectory" in layers:
+        trajectory_judge_id = trajectory_cfg.get("judge_id") or (judge or {}).get("id")
+        if trajectory_judge_id:
+            trajectory_path = d / f"trajectory_grading.{trajectory_judge_id}.json"
+            if trajectory_path.exists():
+                trajectory_judge = json.loads(trajectory_path.read_text(encoding="utf-8"))
+                layers["trajectory"]["judge"] = trajectory_judge.get("judge")
+                layers["trajectory"]["metrics"] = trajectory_judge.get("dimension_means", {})
+                layers["trajectory"]["graded"] = len(trajectory_judge.get("graded") or [])
+                layers["trajectory"]["judge_failures"] = len(
+                    trajectory_judge.get("judge_failures") or []
+                )
+    for layer in ("outcome", "trajectory"):
+        if layer in layers:
+            scores.update(layers[layer].get("metrics") or {})
+    print("\n四层评估视图：")
+    for layer_name, layer in layers.items():
+        print(f"  {layer_name}: {layer.get('metrics', {})}")
 
     executed_turns = df[~df.skipped]
     conversation_df = (
@@ -397,8 +431,10 @@ def main() -> None:
         "n_system_failures": int(len(sysfail)),
         "system_failures_by_kind": sysfail.error_kind.value_counts().to_dict(),
         "scores": scores,
+        "evaluation": layers,
         # 这批分是谁判的。没有它，两个 run 的 assertion_pass_rate 就没法判断可不可比。
         "judge": judge,
+        "trajectory_judge": layers.get("trajectory", {}).get("judge"),
         "skill_injected": float(executed_turns.skill_injected.mean()),  # 体检项
         "stability": {"task_completion": stability, "per_repeat": per_repeat},
         "efficiency": efficiency,
@@ -442,6 +478,10 @@ def main() -> None:
         if judge else
         "<p>未并入 assertion 判定（没跑 grade.py，或该 judge 无结果）——"
         " assertion_pass_rate 记 N/A。</p>")
+    layer_html = "".join(
+        f"<h3>{name.title()} 层</h3><pre>{json.dumps(layer.get('metrics', {}), ensure_ascii=False, indent=2)}</pre>"
+        for name, layer in layers.items()
+    )
     (d / "report.html").write_text("\n".join([
         (
             "<div style='border:3px solid #b45309;padding:12px;background:#fff7ed'>"
@@ -464,6 +504,8 @@ def main() -> None:
          f"<p><b>⚠️ 换 judge 或改 rubric 这些数就会变，不同尺子之间不可比。</b>"
          f"rubric 版本：{judge.get('dimensions')}</p>") if semantic else "",
         judge_html,
+        "<p>trajectory.jsonl 保存本次运行的可观察事件投影；原始事实仍在 runs.jsonl。</p>",
+        layer_html,
         f"<h3>发布门槛</h3><table border=1 cellpadding=4><tr><th>指标</th><th>门槛</th>"
         f"<th>实际</th><th>结果</th></tr>{gate_html}</table>",
         f"<h3>稳定性</h3><p>task_completion 跨 {len(per_repeat)} 次 repeat "

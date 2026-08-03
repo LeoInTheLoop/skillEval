@@ -5,6 +5,198 @@
 
 ---
 
+## 0.-1 2026-08-03：OpenClaw + Docker 基础上的 trajectory 补齐计划（最新）
+
+### 结论
+
+Full evaluation 的事实来源必须是：
+
+```text
+OpenClaw agent loop
+        ↓
+Docker environment
+        ↓
+tool events / tool results / workspace state / artifacts / usage
+        ↓
+RunResult
+        ↓
+Outcome / Trajectory / Reliability / Efficiency evaluator
+```
+
+启用 `scoring.trajectory` 的 suite 已强制要求：
+
+```yaml
+skills.mode: full
+runtime: openclaw
+environment.backend: docker
+```
+
+`routing_only + LiteLLM` 只测 skill 路由，不生成执行轨迹。
+
+### 三个 N/A 的原因
+
+当前 OpenClaw CLI 的 JSON 输出只有聚合 `toolSummary`：使用过哪些工具、总调用数、
+失败数。它没有逐次调用的参数、顺序和逐次返回事件。因此：
+
+| 维度 | 当前证据 | 当前结论 |
+| --- | --- | --- |
+| `tool_selection` | `toolSummary.tools` + case gold | 可以评估，粒度为 coarse |
+| `state_persistence` | Docker workspace 前后快照、artifact hash/size/MIME | 可以评估 |
+| `argument_correctness` | 没有逐次参数 | N/A |
+| `order_correctness` | 没有逐次事件序号 | N/A |
+| `verification_rate` | 没有明确 verification 事件 | N/A |
+
+这些 N/A 不是待 judge 补的分，而是**运行时观测能力缺失**。LLM judge 可以判已有
+证据的语义，不能凭空补 telemetry。
+
+### 正确解决方向：外层采集，不改 OpenClaw 核心
+
+1. 检查当前 OpenClaw CLI 是否支持 JSON event/stream/verbose trace；优先通过 wrapper
+   或 runtime 参数开启。
+2. 如果 CLI 不暴露事件，使用外层 runtime adapter 的 tool-dispatch wrapper，包住
+   Docker 内的 tool 执行入口，记录调用前后事件。
+3. Docker 继续负责 workspace、文件 hash、artifact、网络和权限状态证据。
+4. OpenClaw 负责执行，Evaluator 只读取标准 `RunResult`。
+
+不能用最终回答、聚合 toolSummary 或 Docker 文件 mtime 猜参数和顺序，也不能让 LLM
+judge 把缺失的运行时证据判成成功。
+
+### 目标事件契约
+
+每个 tool call 至少要归一为：
+
+```json
+{
+  "request_id": "case-pos-01.t1.r0",
+  "session_id": "session-...",
+  "turn_index": 1,
+  "step_index": 3,
+  "call_id": "call-003",
+  "event_type": "tool_call",
+  "tool_name": "some_tool",
+  "arguments": {"path": "docs/a.md"},
+  "status": "started",
+  "evidence_level": "exact"
+}
+```
+
+并且必须有对应的 `tool_result`：
+
+```json
+{
+  "step_index": 3,
+  "call_id": "call-003",
+  "event_type": "tool_result",
+  "tool_name": "some_tool",
+  "status": "success",
+  "evidence_level": "exact"
+}
+```
+
+状态变化和验证使用通用事件，不绑定文件：
+
+```json
+{
+  "step_index": 4,
+  "event_type": "state_change",
+  "name": "workspace_state_change",
+  "status": "success",
+  "state_before": {"sha256": "sha256:old"},
+  "state_after": {"sha256": "sha256:new"},
+  "evidence_refs": ["docs/a.md"],
+  "evidence_level": "derived"
+}
+```
+
+```json
+{
+  "step_index": 5,
+  "event_type": "verification",
+  "name": "postcondition_check",
+  "status": "success",
+  "evidence_refs": ["docs/a.md"],
+  "evidence_level": "exact"
+}
+```
+
+参数中的 secret、用户内容和大 payload 必须脱敏；原始 secret 不能进入 runs、trajectory
+或 judge prompt。
+
+### 三个维度如何补齐
+
+#### `argument_correctness`
+
+对照 `tool_name + arguments` 与 case gold、tool schema 和 Docker precondition：必填字段、
+类型、路径/对象、禁止参数、参数值语义。没有 exact arguments 时继续 N/A，不能把 tool
+调用成功当成参数正确。
+
+#### `order_correctness`
+
+使用 `step_index + call_id`，而不是时间或数组位置。检查 required order、tool call/result
+配对、依赖是否满足、失败后的 retry/recovery，以及无效循环。
+
+#### `verification_rate`
+
+只有明确的 postcondition/verification 事件才算验证：
+
+```text
+tool_result(success)
+        ↓
+Docker state probe / read-back / schema check / API state query
+        ↓
+verification(success)
+```
+
+最终回答说成功、artifact 存在，都不能单独证明 Agent 做过 verification。
+
+### 数据准备
+
+full case 使用通用的 `expect_trajectory`，不绑定 read/write：
+
+```json
+{
+  "expect_trajectory": {
+    "goal": "完成业务目标并确认环境状态已经改变",
+    "required_tools": ["some_tool"],
+    "forbidden_tools": ["dangerous_tool"],
+    "required_order": ["inspect", "mutate"],
+    "required_state_change": true,
+    "required_verification": true,
+    "assertions": ["最终回答不能替代真实状态证据"]
+  }
+}
+```
+
+结构化字段优先由 deterministic evaluator 判；只有合理性、是否基于观察行动等语义
+要求才写 `assertions` 交给 judge。示例见：
+`evals/datasets/trajectory_deliverable-pack_v1.0.jsonl`。
+
+### 实施阶段
+
+| 阶段 | 内容 | 状态 |
+| --- | --- | --- |
+| T0 | RunResult trajectory、coarse toolSummary、Docker state diff、trajectory judge、四层 evaluator | ✅ |
+| T1 | 从 OpenClaw 外层获得 exact tool events、arguments、call_id、step_index、tool result | 待做 |
+| T2 | 用 exact events 确定性计算 argument/order/verification | 待做 |
+| T3 | 为文件、数据库、API、代码执行等 skill 增加专用 evaluator | T1/T2 后做 |
+
+### 验收命令
+
+```bash
+.venv/bin/python -m pipeline plan \
+  --suite evals/suites/full_trajectory_example.yaml --healthcheck
+
+.venv/bin/python -m pipeline run \
+  --suite evals/suites/full_trajectory_example.yaml \
+  --stages run,grade,trajectory,score \
+  --confirm --confirm-egress
+```
+
+验收目标不是强行把 N/A 变成数字，而是：只有 OpenClaw + Docker 真实产生相应事件和
+状态证据后，才允许 `N/A → exact score`；否则保留 N/A 才是可信结果。
+
+---
+
 ## 0.0 2026-07-29：full eval 的改进闭环跑通（最新变更）
 
 P3 从"只出建议"补成完整闭环，并**实跑验证过一遍**：

@@ -25,9 +25,13 @@ _DETERMINISTIC = ["exact_set_match", "top1", "no_skill_rejection", "false_activa
                   "type_pos", "type_amb", "type_multi", "type_rej",
                   "task_completion", "turn_completion", "artifact_hit", "tool_hit",
                   "session_continuity", "context_retention", "file_state_continuity",
-                  "critical_miss", "skill_load"]
-# judge 打的分。这些跨 judge 不可比，所以下面要单独标出来
-_JUDGED = ["assertion_pass_rate"] + sorted(dimensions.STANDARD_DIMENSIONS)
+                  "critical_miss", "skill_load", "artifact_correctness"]
+# judge 打的分。这些跨 judge 不可比，所以下面要单独标出来。
+# trajectory 第一版也是 judge 量具；即使未来换成 deterministic evaluator，
+# 没有对应 judge 信息时仍能正常显示，旧 run 则得到 N/A。
+_JUDGED = ["assertion_pass_rate", "final_answer_quality",
+           "tool_selection", "argument_correctness", "order_correctness",
+           "state_persistence", "verification_rate"] + sorted(dimensions.STANDARD_DIMENSIONS)
 METRICS = _DETERMINISTIC + _JUDGED
 EFFICIENCY = ("time_seconds", "tokens", "tool_calls", "errors")
 
@@ -65,6 +69,11 @@ def load_run(d: Path) -> dict:
         "judge_prompt_hash": judge.get("system_prompt_hash"),
         # 维度 id → rubric 版本。改了 rubric 就是换了尺子，哪怕模型没换
         "judge_dimensions": json.dumps(judge.get("dimensions") or {}, sort_keys=True),
+        "trajectory_judge": (scores.get("trajectory_judge") or {}).get("id"),
+        "trajectory_judge_model": (scores.get("trajectory_judge") or {}).get("model"),
+        "trajectory_judge_prompt_hash": (
+            scores.get("trajectory_judge") or {}
+        ).get("system_prompt_hash"),
         "n_skills": len(snap.get("skill_catalog") or snap.get("skills") or {}),
         "gate_pass": scores.get("gate_pass"),
         "scores": scores.get("scores", {}),
@@ -83,7 +92,8 @@ _FIXED = ("model", "runtime", "repeats", "parallelism")
 # judge 是量具，不是实验对象。换了它，**只有 assertion_pass_rate 这一行**不可比，
 # 其余确定性维度完全不受影响 —— 所以单独一类，不并进 _FIXED。
 # 把它报成全局污染会让人以为整张表都不能信，那种过度警告的下场是所有警告都被忽略。
-_JUDGE = ("judge", "judge_model", "judge_prompt_hash", "judge_dimensions")
+_JUDGE = ("judge", "judge_model", "judge_prompt_hash", "judge_dimensions",
+          "trajectory_judge", "trajectory_judge_model", "trajectory_judge_prompt_hash")
 _LEGACY_DEFAULTS = {"repeats": 3, "parallelism": 1}
 
 
