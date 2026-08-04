@@ -14,6 +14,10 @@ PROVENANCE.local.md
 __pycache__/
 evals/drafts/
 
+# Local development notes and agent instructions.
+HANDOFF.md
+AGENTS.md
+
 # --- 私有输入：只发一套自洽的示例，其余留在本地 ---
 # 规则：被测 skill、题集、suite、素材都是**用户私有输入**，不随 eval 平台上传。
 # 仓库只跟踪 routing/full 两套能在空白 clone 上跑通的示例；
