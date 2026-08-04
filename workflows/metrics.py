@@ -121,6 +121,59 @@ def flaky_cases(
     return out
 
 
+def _complete_repeat_groups(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    key: str,
+    k: int,
+    case_key: str = "case_id",
+    repeat_key: str = "repeat",
+) -> list[list[bool]]:
+    """收集恰好完成 k 个独立 repeat 的 case。
+
+    系统失败或缺失 repeat 不应被当成 task failure，也不能悄悄当成成功；
+    因此只有完整的 case 才进入 pass@k / pass^k 分母。
+    """
+    if k < 1:
+        raise ValueError("k 必须 >= 1")
+    grouped: dict[str, dict[Any, bool]] = {}
+    for row in rows:
+        case_id = str(row.get(case_key))
+        repeat = row.get(repeat_key)
+        grouped.setdefault(case_id, {})[repeat] = bool(row.get(key))
+    return [list(repeats.values()) for repeats in grouped.values() if len(repeats) == k]
+
+
+def pass_at_k(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    key: str,
+    k: int,
+    case_key: str = "case_id",
+    repeat_key: str = "repeat",
+) -> float | None:
+    """k 次运行中至少成功一次的 case 比例（pass@k）。"""
+    groups = _complete_repeat_groups(
+        rows, key=key, k=k, case_key=case_key, repeat_key=repeat_key
+    )
+    return round(sum(any(values) for values in groups) / len(groups), 4) if groups else None
+
+
+def pass_all_k(
+    rows: Iterable[Mapping[str, Any]],
+    *,
+    key: str,
+    k: int,
+    case_key: str = "case_id",
+    repeat_key: str = "repeat",
+) -> float | None:
+    """k 次运行全部成功的 case 比例（pass^k，稳定性指标）。"""
+    groups = _complete_repeat_groups(
+        rows, key=key, k=k, case_key=case_key, repeat_key=repeat_key
+    )
+    return round(sum(all(values) for values in groups) / len(groups), 4) if groups else None
+
+
 def non_discriminating(
     baseline: Mapping[str, float],
     treatment: Mapping[str, float],

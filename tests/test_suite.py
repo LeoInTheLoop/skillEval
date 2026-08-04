@@ -53,6 +53,20 @@ def test_仓库内所有_suite_都通过严格契约():
         assert load_suite(path).suite_id
 
 
+@pytest.mark.parametrize("kind", ["capability", "regression"])
+def test_dataset_kind_区分能力集与回归集(kind):
+    data = _valid_suite()
+    data["dataset_kind"] = kind
+    assert RoutingSuite.model_validate(data).dataset_kind == kind
+
+
+def test_dataset_kind_非法值被拒绝():
+    data = _valid_suite()
+    data["dataset_kind"] = "benchmark"
+    with pytest.raises(ValidationError):
+        RoutingSuite.model_validate(data)
+
+
 @pytest.mark.parametrize(
     "change",
     [

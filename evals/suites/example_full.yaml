@@ -5,6 +5,7 @@ suite_version: "1.0"
 description: Docker-isolated deliverable-pack two-case full-eval smoke test
 
 dataset: evals/datasets/full_example_v1.0.jsonl
+dataset_kind: capability
 
 runtime: openclaw
 runtime_options:

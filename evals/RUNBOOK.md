@@ -76,6 +76,7 @@ suite_id: example_routing
 suite_version: "1.0"
 
 dataset: evals/datasets/routing_example_v1.0.jsonl   # 问题集
+dataset_kind: capability                              # capability | regression
 
 runtime: litellm            # 用什么跑：litellm | openclaw | mock（工厂 key）
 routing_input:              # 给路由模型看什么（另一个工厂）
@@ -116,6 +117,13 @@ scoring:
 - `include` 回答“模型能从谁里面选”，会改变实际路由条件。
 - No-Skill 基线仍写 `target: [pdf]`，但故意不把 `pdf` 放进 `include`。这样基线仍归 PDF，
   又不会把目标 skill 暴露给模型。
+
+`dataset_kind` 区分两种用途：
+
+- `capability`：探索新能力，允许通过率较低，用来发现边界和指导改进。
+- `regression`：已经人工确认并“毕业”的能力，目标是防止已有行为退化。
+
+它只描述测试集的生命周期，不改变 case 的评分逻辑；默认值 `capability` 仅用于兼容旧 suite。
 
 `target` 进入 `config.snapshot.yaml`，但不进入运行 `config_hash`，因为它不改变 prompt、
 catalog 或 `runs.jsonl`；只改归属不应制造“实验条件变化”的假警报。

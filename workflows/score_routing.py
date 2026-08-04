@@ -184,6 +184,7 @@ def main() -> None:
         rows.append({
             "case_id": c.id,
             "type": case_type(c.id),
+            "stage": c.case_stage,
             "severity": c.severity,
             "repeat": r.get("repeat_index", 0),
             "n_expected": len(exp),
@@ -246,6 +247,14 @@ def main() -> None:
     for t, row in by_type.iterrows():
         print(f"  {t:<6} {int(row.runs):>4} runs   {row.accuracy:6.1%}")
 
+    by_stage = df.groupby("stage").agg(runs=("exact", "size"), accuracy=("exact", "mean"))
+    by_stage = by_stage.reindex(
+        [stage for stage in ("trigger", "logic", "artifact", "failure") if stage in by_stage.index]
+    )
+    print("\n分层准确率（四层 taxonomy）：")
+    for stage, row in by_stage.iterrows():
+        print(f"  {stage:<9} {int(row.runs):>4} runs   {row.accuracy:6.1%}")
+
     rep = classification_report(
         sdf.y_true, sdf.y_pred, labels=labels, output_dict=True, zero_division=0
     )
@@ -273,10 +282,23 @@ def main() -> None:
     # --- 稳定性 / 效率 / 题目质量诊断（metrics.py，全部确定性计算）---
     per_repeat = df.groupby("repeat").exact.mean().tolist()
     stability = metrics.stats(per_repeat)
+    k = int(suite.get("repeats") or 1)
+    pass_at_k = metrics.pass_at_k(df.to_dict("records"), key="exact", k=k)
+    pass_all_k = metrics.pass_all_k(df.to_dict("records"), key="exact", k=k)
+    pass_at_stats = (
+        {"mean": pass_at_k, "stddev": 0.0, "min": pass_at_k, "max": pass_at_k}
+        if pass_at_k is not None else None
+    )
+    pass_all_stats = (
+        {"mean": pass_all_k, "stddev": 0.0, "min": pass_all_k, "max": pass_all_k}
+        if pass_all_k is not None else None
+    )
     efficiency = metrics.efficiency(all_runs)
     flaky = metrics.flaky_cases(rows, key="exact")
     print(f"\n稳定性：exact_set_match 跨 {len(per_repeat)} 次 repeat "
           f"{metrics.format_stats(stability, percent=True)}")
+    print(f"  pass@{k:<2} {metrics.format_stats(pass_at_stats, percent=True)}   "
+          f"pass^{k} {metrics.format_stats(pass_all_stats, percent=True)}")
     print("\n效率维度（不进 gate；换 skill 让准确率涨一点却让 token 翻倍时要看得见）：")
     for key, unit in (("time_seconds", "s"), ("tokens", ""), ("tool_calls", ""), ("errors", "")):
         print(f"  {key:<14} {metrics.format_stats(efficiency[key], unit=unit)}")
@@ -293,10 +315,13 @@ def main() -> None:
         "top1": float(top1_acc), "multi_exact": float(multi_acc),
         "no_skill_rejection": float(reject_acc), "false_activation": float(false_act),
         "critical_miss": float(critical_miss),
+        "pass_at_k": pass_at_k,
+        "pass_all_k": pass_all_k,
         # 没跑 grade.py 就是 None（N/A）。不能按 0，那等于「一条断言都没过」。
         "assertion_pass_rate": (grading or {}).get("pass_rate"),
     }
     scores.update({f"type_{t}": float(r.accuracy) for t, r in by_type.iterrows()})
+    scores.update({f"stage_{stage}": float(r.accuracy) for stage, r in by_stage.iterrows()})
 
     # 语义维度：0–1 连续分，judge 模型打的。和上面的路由指标分开印 ——
     # 上面的换台机器重算必然一致，这里的换把尺子就会变。
@@ -395,9 +420,16 @@ def main() -> None:
         "judge": judge,          # 这批 assertion 分是谁判的；没跑 grade.py 就是 None
         "trajectory_judge": layers.get("trajectory", {}).get("judge"),
         "stability": {"exact_set_match": stability, "per_repeat": per_repeat},
+        "reliability": {
+            "k": k,
+            "pass_at_k": pass_at_k,
+            "pass_all_k": pass_all_k,
+            "pass_all_label": f"pass^{k}",
+        },
         "efficiency": efficiency,
         "flaky_cases": flaky,
         "by_type": by_type.assign(accuracy=by_type.accuracy.round(4)).to_dict(orient="index"),
+        "by_stage": by_stage.assign(accuracy=by_stage.accuracy.round(4)).to_dict(orient="index"),
         "per_skill": per.round(4).to_dict(orient="index"),
         "confusion_matrix": {"labels": labels, "matrix": cm.tolist(),
                              "covers_runs": int(len(sdf))},

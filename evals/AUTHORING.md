@@ -105,6 +105,7 @@ outputs/routing_all_v1.0__gpt-4o__v1/        # 换模型
 | `expected_skills` | ✅ | 期望激活的 skill_id 列表；**空列表 = 期望拒答** |
 | `tags` | | **只认这四个枚举**：`["positive"]` / `["ambiguous"]` / `["multi-skill"]` / `["no-skill"]`。自由文本标签没法聚合，`gen_cases` 会把生成器随手写的标签规范化掉 |
 | `severity` | | `low` / `medium` / `high` / `critical`，默认 `medium`。`critical` **真的会进指标**（见下） |
+| `stage` | | 四层测试阶段：`trigger` / `logic` / `artifact` / `failure`。新题建议显式填写；旧题会按已有断言兼容推断 |
 | `files` | | 输入素材，相对仓库根的路径（放 `evals/fixtures/`）。跑的时候按 basename **只读**复制进 workspace；声明了但文件不存在 → `pipeline plan` 直接拦下 |
 | `expect_artifacts` | | **full eval 专用**：必须产出的文件，相对 workspace 的路径 glob |
 | `expect_tools` | | **full eval 专用**：必须调到的 tool 名，如 `["write"]` |

@@ -10,6 +10,7 @@ description: 三个示例 skill 的路由基线（routing-only，不执行 skill
 
 # --- 问题集 ---
 dataset: evals/datasets/routing_example_v1.0.jsonl
+dataset_kind: capability
 
 # --- 执行环境 ---
 runtime: litellm            # 工厂 key：litellm | openclaw | mock（见 adapters/runtimes/）

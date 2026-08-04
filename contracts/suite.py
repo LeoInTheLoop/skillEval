@@ -320,6 +320,9 @@ class RoutingSuite(_StrictModel):
     suite_version: str = Field(min_length=1)
     description: str = ""
     dataset: str = Field(min_length=1)
+    # capability = 新能力探索；regression = 已毕业能力的防退化套件。
+    # 默认 capability 只为兼容历史 suite；新 suite 应显式声明。
+    dataset_kind: Literal["capability", "regression"] = "capability"
 
     runtime: str = Field(min_length=1)
     runtime_options: dict[str, Any] = Field(default_factory=dict)

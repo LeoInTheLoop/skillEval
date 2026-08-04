@@ -104,6 +104,25 @@ def test_只跑一次的题不下_flaky_结论():
     assert metrics.flaky_cases([{"case_id": "a-pos-01", "done": False}], key="done") == []
 
 
+def test_pass_at_k_和_pass_all_k_区分峰值与稳定性():
+    rows = [
+        {"case_id": "a-pos-01", "repeat": 0, "done": True},
+        {"case_id": "a-pos-01", "repeat": 1, "done": False},
+        {"case_id": "a-pos-01", "repeat": 2, "done": True},
+        {"case_id": "a-pos-02", "repeat": 0, "done": True},
+        {"case_id": "a-pos-02", "repeat": 1, "done": True},
+        {"case_id": "a-pos-02", "repeat": 2, "done": True},
+    ]
+    assert metrics.pass_at_k(rows, key="done", k=3) == 1.0
+    assert metrics.pass_all_k(rows, key="done", k=3) == 0.5
+
+
+def test_pass_k_缺少完整_repeat_时记_NA():
+    rows = [{"case_id": "a-pos-01", "repeat": 0, "done": True}]
+    assert metrics.pass_at_k(rows, key="done", k=3) is None
+    assert metrics.pass_all_k(rows, key="done", k=3) is None
+
+
 # --- non_discriminating：有无 skill 都满分的题 ---
 
 def test_两边都满分的题不判别_skill():

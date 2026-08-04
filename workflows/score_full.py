@@ -86,6 +86,7 @@ def score_run(run: dict, case, catalog: set[str]) -> dict:
     return {
         "case_id": case.id,
         "type": case.case_type,
+        "stage": case.case_stage,
         "severity": case.severity,
         "repeat": run.get("repeat_index"),
         "turn": turn_index,
@@ -306,6 +307,7 @@ def main() -> None:
         .agg(
             done=("done", "all"),
             type=("type", "first"),
+            stage=("stage", "first"),
             severity=("severity", "first"),
             turns=("turn", "max"),
         )
@@ -316,11 +318,28 @@ def main() -> None:
     # 只有 mean 的时候，「三次都 80%」和「100/100/40」长得一模一样。
     per_repeat = conversation_df.groupby("repeat").done.mean().tolist()
     stability = metrics.stats(per_repeat)
+    k = int(suite.get("repeats") or 1)
+    pass_at_k = metrics.pass_at_k(conversation_df.to_dict("records"), key="done", k=k)
+    pass_all_k = metrics.pass_all_k(conversation_df.to_dict("records"), key="done", k=k)
+    pass_at_stats = (
+        {"mean": pass_at_k, "stddev": 0.0, "min": pass_at_k, "max": pass_at_k}
+        if pass_at_k is not None else None
+    )
+    pass_all_stats = (
+        {"mean": pass_all_k, "stddev": 0.0, "min": pass_all_k, "max": pass_all_k}
+        if pass_all_k is not None else None
+    )
+    scores.update({
+        "pass_at_k": pass_at_k,
+        "pass_all_k": pass_all_k,
+    })
     efficiency = metrics.efficiency(
         run for run in runs if run.get("status") != "skipped"
     )
     print(f"\n稳定性：task_completion 跨 {len(per_repeat)} 次 repeat "
           f"{metrics.format_stats(stability, percent=True)}")
+    print(f"  pass@{k:<2} {metrics.format_stats(pass_at_stats, percent=True)}   "
+          f"pass^{k} {metrics.format_stats(pass_all_stats, percent=True)}")
     print("\n效率维度（这些不进 gate，但 skill 让准确率涨 5% 却让耗时翻倍时要看得见）：")
     for key, unit in (("time_seconds", "s"), ("tokens", ""), ("tool_calls", ""), ("errors", "")):
         print(f"  {key:<14} {metrics.format_stats(efficiency[key], unit=unit)}")
@@ -340,6 +359,16 @@ def main() -> None:
     print("\n分题型任务完成度：")
     for t, r in by_type.iterrows():
         print(f"  {t:<6} {int(r.runs):>3} runs   {r.completion:6.1%}")
+
+    by_stage = conversation_df.groupby("stage").agg(
+        runs=("done", "size"), completion=("done", "mean")
+    )
+    by_stage = by_stage.reindex(
+        [stage for stage in ("trigger", "logic", "artifact", "failure") if stage in by_stage.index]
+    )
+    print("\n分层任务完成度（四层 taxonomy）：")
+    for stage, r in by_stage.iterrows():
+        print(f"  {stage:<9} {int(r.runs):>3} runs   {r.completion:6.1%}")
 
     print("\n逐题：")
     per_case_completion = conversation_df.groupby("case_id").agg(
@@ -437,9 +466,16 @@ def main() -> None:
         "trajectory_judge": layers.get("trajectory", {}).get("judge"),
         "skill_injected": float(executed_turns.skill_injected.mean()),  # 体检项
         "stability": {"task_completion": stability, "per_repeat": per_repeat},
+        "reliability": {
+            "k": k,
+            "pass_at_k": pass_at_k,
+            "pass_all_k": pass_all_k,
+            "pass_all_label": f"pass^{k}",
+        },
         "efficiency": efficiency,
         "flaky_cases": flaky,
         "by_type": by_type.round(4).to_dict(orient="index"),
+        "by_stage": by_stage.round(4).to_dict(orient="index"),
         "per_case": per_case.round(4).to_dict(orient="index"),
         "per_turn": {
             f"{case_id}.t{turn}": values

@@ -16,6 +16,7 @@ from .trajectory import TrajectoryExpectation
 
 Severity = Literal["low", "medium", "high", "critical"]
 CaseType = Literal["pos", "amb", "rej", "multi"]
+CaseStage = Literal["trigger", "logic", "artifact", "failure"]
 _CASE_ID = re.compile(
     r"^(?P<scope>[A-Za-z0-9_.+-]+)-(?P<type>pos|amb|rej|multi)-(?P<seq>\d{2,})$"
 )
@@ -61,6 +62,8 @@ class RoutingCase(BaseModel):
     expected_skills: list[str] = Field(default_factory=list)
     tags: list[str] = Field(default_factory=list)
     severity: Severity = "medium"
+    # 四层测试 taxonomy。旧数据不填时按已有断言/标签推断，新的数据建议显式填写。
+    stage: CaseStage | None = None
 
     # --- 输入素材（AGENTS.md §11.4）---
     # 相对仓库根的路径，素材放 evals/fixtures/。Environment Backend 会在
@@ -99,6 +102,25 @@ class RoutingCase(BaseModel):
         """从 id 取题型段：pdf-pos-01 → pos（AUTHORING.md §1.2）。"""
         parts = self.id.split("-")
         return parts[-2] if len(parts) >= 3 else "?"
+
+    @property
+    def case_stage(self) -> str:
+        """返回 trigger → logic → artifact → failure 四层之一。
+
+        ``stage`` 是数据集的正式声明；推断只为兼容历史 JSONL，不把旧题强行迁移。
+        ``failure`` 优先看标签，full 题的产物断言其次，工具/trajectory 断言归 logic，
+        其余 routing 题归 trigger。
+        """
+        if self.stage:
+            return self.stage
+        tags = {tag.casefold() for tag in self.tags}
+        if tags & {"failure", "error", "robustness", "异常", "容错"}:
+            return "failure"
+        if self.expect_artifacts or self.forbid_artifacts:
+            return "artifact"
+        if self.expect_tools or self.expect_trajectory:
+            return "logic"
+        return "trigger"
 
     @property
     def turn_count(self) -> int:

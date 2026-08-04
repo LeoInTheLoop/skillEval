@@ -7,6 +7,7 @@ from __future__ import annotations
 from .context import ContextMessage, ContextRole, ContextTool, RoutingContext, ToolSource
 from .evalcase import (
     CaseSetValidationError,
+    CaseStage,
     CaseType,
     FullEvalTurn,
     RoutingCase,
@@ -72,6 +73,7 @@ __all__ = [
     "TEXT_EXCERPT_LIMIT",
     "Artifact",
     "CaseSetValidationError",
+    "CaseStage",
     "CaseType",
     "ContextMessage",
     "ContextRole",

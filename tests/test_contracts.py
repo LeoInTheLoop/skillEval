@@ -162,6 +162,24 @@ def test_case_type_来自_id_倒数第二段():
     assert RoutingCase(id="short", prompt="p").case_type == "?"
 
 
+def test_case_stage_支持四层并兼容旧题推断():
+    assert RoutingCase(id="x-pos-01", prompt="p", stage="trigger").case_stage == "trigger"
+    assert RoutingCase(
+        id="x-pos-01", prompt="p", expect_tools=["write"]
+    ).case_stage == "logic"
+    assert RoutingCase(
+        id="x-pos-01", prompt="p", expect_artifacts=["out/a.md"]
+    ).case_stage == "artifact"
+    assert RoutingCase(
+        id="x-pos-01", prompt="p", tags=["failure"]
+    ).case_stage == "failure"
+
+
+def test_case_stage_非法值被拒绝():
+    with pytest.raises(ValidationError):
+        RoutingCase(id="x-pos-01", prompt="p", stage="security")
+
+
 # ---- P2 生成集跨题校验 ----
 
 def _generated_cases():
