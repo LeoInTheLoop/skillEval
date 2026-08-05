@@ -423,10 +423,21 @@ def resolve_suite_references(suite: RoutingSuite) -> dict[str, Any]:
     if environment.get("backend") == "docker" and image_env:
         image = (os.environ.get(image_env) or "").strip()
         if not image:
-            raise ValueError(
+            detail = (
                 f"docker image 环境变量 {image_env} 未设置；先 build 镜像并把固定 "
                 "sha256 ID 写入该变量"
             )
+            if image_env == "SKILLEVAL_OPENCLAW_IMAGE":
+                detail += (
+                    ":\n  docker build -f environments/openclaw.Dockerfile "
+                    "-t skilleval-openclaw .\n"
+                    "  export SKILLEVAL_OPENCLAW_IMAGE=\"$(docker image inspect "
+                    "skilleval-openclaw --format '{{.Id}}')\"\n"
+                    "然后重跑 `.venv/bin/python -m pipeline plan --suite <suite> --healthcheck`；"
+                    "若 build 报 input/output 或 read-only filesystem，先修复 Docker daemon "
+                    "存储，这不是 skill 失败"
+                )
+            raise ValueError(detail)
         if not PINNED_IMAGE.search(image):
             raise ValueError(
                 f"{image_env} 必须是固定 image：name@sha256:<64位> 或本地 "

@@ -143,6 +143,9 @@ catalog 或 `runs.jsonl`；只改归属不应制造“实验条件变化”的�
 Docker 示例写 `environment.image_env: SKILLEVAL_OPENCLAW_IMAGE`，因为本地 build 的
 固定 image ID 每台机器不同。`pipeline plan/run` 会先把它解析成实际 `sha256:` ID，再
 写入快照和 `config_hash`；变量未设置、值是浮动 tag 或长度不合法都会在运行前拒绝。
+缺默认变量时错误会直接打印可复制的 `docker build`、`docker image inspect`/`export` 和
+复检命令。Docker daemon 或其 storage 不健康时，environment healthcheck 会单独阻断并把
+runtime 标成 `skipped`；不会继续起容器，也不得把这类 failure 计入 skill 分数。
 
 full suite 的 `tools` 同时进入快照和 runtime 请求，但它不是评分 gold：
 

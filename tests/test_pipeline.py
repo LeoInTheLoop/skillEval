@@ -45,6 +45,52 @@ def test_mock_plan_is_runnable_and_shows_the_same_workload():
     assert "--confirm --mock" in rendered
 
 
+def test_environment健康失败后跳过runtime探测并明确不是skill执行(monkeypatch):
+    from contracts import RuntimeCapabilities, RuntimeHealth
+    from pipeline import plan as plan_module
+
+    class BrokenEnvironment:
+        name = "docker"
+
+        def healthcheck(self):
+            return RuntimeHealth(
+                healthy=False,
+                runtime="environment:docker",
+                detail="Docker daemon storage is unhealthy; not a skill result",
+            )
+
+        def capabilities(self):
+            return {}
+
+        def fingerprint(self):
+            return {"backend": "docker-test"}
+
+    class RuntimeThatMustNotBeProbed:
+        name = "mock"
+
+        def capabilities(self):
+            return RuntimeCapabilities(runtime="mock", skill_modes=["routing_only"])
+
+        def fingerprint(self):
+            return {"runtime": "mock"}
+
+        def healthcheck(self, _environment=None):
+            raise AssertionError("runtime healthcheck must be skipped")
+
+    monkeypatch.setattr(plan_module, "build_environment", lambda _suite: BrokenEnvironment())
+    monkeypatch.setattr(
+        plan_module, "build_runtime", lambda _suite, _cases, _mock: RuntimeThatMustNotBeProbed()
+    )
+
+    plan = build_plan("evals/suites/example_routing.yaml", mock=True, check_health=True)
+
+    assert not plan.runnable
+    assert plan.health["environment"]["healthy"] is False
+    assert plan.health["runtime"]["checked"] is False
+    assert "no runtime/skill execution attempted" in plan.health["runtime"]["detail"]
+    assert "runtime=skipped" in render_plan(plan)
+
+
 def test_plan_with_execution_id_previews_the_exact_immutable_directory():
     plan = build_plan("evals/suites/example_routing.yaml", mock=True, execution_id="trial-01")
 

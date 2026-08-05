@@ -206,8 +206,9 @@ def test_docker_image_env解析为固定镜像并进入实际配置(monkeypatch)
     }
     suite = RoutingSuite.model_validate(data)
 
-    with pytest.raises(ValueError, match="SKILLEVAL_TEST_IMAGE 未设置"):
+    with pytest.raises(ValueError, match="SKILLEVAL_TEST_IMAGE 未设置") as missing:
         resolve_suite_references(suite)
+    assert "openclaw.Dockerfile" not in str(missing.value)
 
     monkeypatch.setenv("SKILLEVAL_TEST_IMAGE", "latest")
     with pytest.raises(ValueError, match="固定 image"):
@@ -222,6 +223,20 @@ def test_docker_image_env解析为固定镜像并进入实际配置(monkeypatch)
     monkeypatch.setenv("SKILLEVAL_TEST_IMAGE", "sha256:" + "b" * 64)
     second = resolve_suite_references(suite)
     assert config_hash(resolved) != config_hash(second)
+
+
+def test_默认openclaw_image_env缺失时直接给完整恢复命令(monkeypatch):
+    monkeypatch.delenv("SKILLEVAL_OPENCLAW_IMAGE", raising=False)
+    suite = load_suite("evals/suites/example_full.yaml")
+
+    with pytest.raises(ValueError) as caught:
+        resolve_suite_references(suite)
+
+    message = str(caught.value)
+    assert "docker build -f environments/openclaw.Dockerfile" in message
+    assert "export SKILLEVAL_OPENCLAW_IMAGE" in message
+    assert "pipeline plan --suite <suite> --healthcheck" in message
+    assert "不是 skill 失败" in message
 
 
 def test_docker_image与image_env不能同时声明():

@@ -104,6 +104,31 @@ class _FakeClient:
         self.closed = True
 
 
+class _FakeImages:
+    def __init__(self, error=None):
+        self.error = error
+
+    def get(self, _image):
+        if self.error:
+            raise self.error
+        return object()
+
+
+class _HealthClient:
+    def __init__(self, *, ping_error=None, image_error=None):
+        self.ping_error = ping_error
+        self.images = _FakeImages(image_error)
+        self.closed = False
+
+    def ping(self):
+        if self.ping_error:
+            raise self.ping_error
+        return True
+
+    def close(self):
+        self.closed = True
+
+
 def test_docker_mount_网络资源_prefix和清理():
     client = _FakeClient()
     backend = DockerEnvironmentBackend(
@@ -190,6 +215,39 @@ def test_docker缺凭据在跑之前就报不健康(monkeypatch):
     health = backend.healthcheck()
     assert not health.healthy
     assert "SKILLEVAL_TEST_ABSENT" in health.detail
+
+
+def test_docker缺镜像给可复制build与pin命令且关闭client():
+    client = _HealthClient(image_error=RuntimeError("No such image"))
+    backend = DockerEnvironmentBackend(
+        image="sha256:" + "a" * 64, client_factory=lambda: client
+    )
+
+    health = backend.healthcheck()
+
+    assert not health.healthy and client.closed
+    assert "environment setup failure, not a skill result" in health.detail
+    assert "docker build -f environments/openclaw.Dockerfile" in health.detail
+    assert "export SKILLEVAL_OPENCLAW_IMAGE" in health.detail
+    assert "pipeline plan --healthcheck" in health.detail
+
+
+@pytest.mark.parametrize("message", [
+    "containerdmeta.db: input/output error",
+    "/var/lib/docker/tmp: read-only file system",
+])
+def test_docker存储故障明确归环境而非skill(message):
+    client = _HealthClient(ping_error=RuntimeError(message))
+    backend = DockerEnvironmentBackend(
+        image="sha256:" + "a" * 64, client_factory=lambda: client
+    )
+
+    health = backend.healthcheck()
+
+    assert not health.healthy
+    assert "daemon storage is unhealthy" in health.detail
+    assert "environment/harness failure, not a skill result" in health.detail
+    assert "docker info" in health.detail
 
 
 @requires_docker

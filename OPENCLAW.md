@@ -260,6 +260,12 @@ export SKILLEVAL_OPENCLAW_IMAGE="$(
   --suite evals/suites/example_full.yaml --confirm --confirm-egress
 ```
 
+若 build 报 `containerdmeta.db: input/output error`、`read-only file system` 或
+`no space left on device`，先停在这里：这是 Docker daemon 的 storage 故障，不是镜像、
+OpenClaw 或被测 skill 的失败。重启 Docker Desktop/daemon，检查 Docker 分配的磁盘与
+`docker info`；`docker info` 恢复后再 build。`pipeline plan --healthcheck` 会把这类错误归为
+environment/harness，并跳过 runtime probe，避免同一故障重复报成 OpenClaw 不健康。
+
 示例的 `tools: ["*"]` 是有意的：完整 toolset 在容器内运行；安全边界由逐请求容器、
 读写分离 mount、独立 workspace、CPU/内存和网络模式提供。若改成 local environment，
 不要照搬全开配置。

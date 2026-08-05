@@ -4,6 +4,27 @@
 
 ---
 
+## 2026-08-05 (UX-05) · Docker full preflight 给出能执行的恢复路径
+
+第 5 次普通用户模拟在 full eval 前被 `SKILLEVAL_OPENCLAW_IMAGE` 缺失挡住；原错误只说
+“build 并设置 digest”，具体命令藏在 README。照文档 build 后 Docker Desktop 又报
+`containerdmeta.db: input/output error` / daemon tmp `read-only file system`。这类宿主环境
+故障不能被读成 skill failure。
+
+默认 OpenClaw image env 缺失时，suite reference resolver 现在直接打印完整 build、inspect/
+export、healthcheck 命令；自定义 image_env 仍保持通用，不硬塞 OpenClaw 特例。Docker backend
+把 daemon unavailable、daemon storage unhealthy、pinned image missing 分开说明，所有路径
+明确 environment/harness、未执行 skill，并确保 SDK client 关闭。
+
+同时修掉一个更深的预检顺序问题：旧代码用 eager tuple 同时调用 environment/runtime
+healthcheck，Docker 已失败仍会再进容器探 OpenClaw。现在严格先 environment；失败则 runtime
+标 `skipped`，不调用、不重复阻断。真实 `example_full.yaml` 缺变量路径已重放，第一屏即可
+复制命令恢复。
+
+**验证基线：378 passed / 1 skipped。**
+
+---
+
 ## 2026-08-05 (UX-04) · init 默认模型与额度策略一致，provider 失败不再刷屏
 
 普通用户模拟里，仓库默认的 `qwen3.7-max-2026-05-17` 已在公开 model policy 标成 quota

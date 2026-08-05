@@ -19,6 +19,44 @@ from contracts import (
 from . import register
 from .filesystem import materialized_files
 
+OPENCLAW_BUILD_COMMAND = (
+    "docker build -f environments/openclaw.Dockerfile -t skilleval-openclaw ."
+)
+OPENCLAW_EXPORT_COMMAND = (
+    "export SKILLEVAL_OPENCLAW_IMAGE=\"$(docker image inspect "
+    "skilleval-openclaw --format '{{.Id}}')\""
+)
+
+
+def _docker_failure_detail(exc: Exception, *, phase: str, image: str) -> str:
+    """Classify host Docker failures without ever calling them skill failures."""
+    blob = f"{type(exc).__name__}: {exc}"
+    lowered = blob.lower()
+    storage_hints = (
+        "input/output error",
+        "read-only file system",
+        "containerdmeta.db",
+        "metadata.db",
+        "no space left on device",
+    )
+    if any(hint in lowered for hint in storage_hints):
+        return (
+            f"Docker daemon storage is unhealthy during {phase}: {blob}. "
+            "This is an environment/harness failure, not a skill result. Restart Docker Desktop "
+            "or the Docker daemon, verify its disk/storage, then rerun `docker info` before "
+            "rebuilding the image."
+        )
+    if phase == "daemon":
+        return (
+            f"Docker daemon is unavailable: {blob}. Start/restart Docker and confirm `docker info` "
+            "works; no skill execution was attempted."
+        )
+    return (
+        f"Pinned Docker image is unavailable: {image} ({blob}). This is an environment setup "
+        f"failure, not a skill result. Build and pin the shipped image:\n  {OPENCLAW_BUILD_COMMAND}"
+        f"\n  {OPENCLAW_EXPORT_COMMAND}\nThen rerun `pipeline plan --healthcheck`."
+    )
+
 
 @register("docker")
 class DockerEnvironmentBackend:
@@ -159,17 +197,35 @@ class DockerEnvironmentBackend:
                 detail=f"env_passthrough 点名的变量在宿主环境里没有值：{missing}；"
                        f"把它们写进 .env",
             )
+        client = None
         try:
             client = self._client()
             info = client.ping()
-            client.images.get(self.image)
-            client.close()
-        except Exception as exc:  # SDK 会按 daemon/image 状态抛不同异常
+        except Exception as exc:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
             return RuntimeHealth(
                 healthy=False,
                 runtime="environment:docker",
-                detail=f"Docker daemon 或固定镜像不可用：{exc}",
+                detail=_docker_failure_detail(exc, phase="daemon", image=self.image),
             )
+        try:
+            client.images.get(self.image)
+        except Exception as exc:
+            return RuntimeHealth(
+                healthy=False,
+                runtime="environment:docker",
+                detail=_docker_failure_detail(exc, phase="image", image=self.image),
+            )
+        finally:
+            if client is not None:
+                try:
+                    client.close()
+                except Exception:
+                    pass
         return RuntimeHealth(
             healthy=bool(info), runtime="environment:docker",
             detail=f"image={self.image}",

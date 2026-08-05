@@ -445,8 +445,8 @@ def build_plan(
 
     health: dict[str, dict[str, Any]] = {}
     if check_health:
-        for subject, result in (("environment", environment.healthcheck()),
-                                ("runtime", runtime.healthcheck(environment))):
+        environment_result = environment.healthcheck()
+        for subject, result in [("environment", environment_result)]:
             detail = _healthcheck_detail(subject, result.detail, result.runtime)
             health[subject] = {
                 "checked": True,
@@ -456,6 +456,24 @@ def build_plan(
             }
             if not result.healthy:
                 blocked.append(f"{subject} healthcheck failed: {detail}")
+        if environment_result.healthy:
+            result = runtime.healthcheck(environment)
+            detail = _healthcheck_detail("runtime", result.detail, result.runtime)
+            health["runtime"] = {
+                "checked": True,
+                "healthy": result.healthy,
+                "detail": detail,
+                "version": result.version,
+            }
+            if not result.healthy:
+                blocked.append(f"runtime healthcheck failed: {detail}")
+        else:
+            health["runtime"] = {
+                "checked": False,
+                "healthy": False,
+                "detail": "skipped because environment healthcheck failed; no runtime/skill execution attempted",
+                "version": None,
+            }
     else:
         health = {
             "environment": {"checked": False},
@@ -617,14 +635,15 @@ def render_plan(plan: PipelinePlan) -> str:
         "",
         "models and outputs (results always live under project outputs/, not inside a skill source):",
     ])
-    if plan.health["runtime"].get("checked"):
+    if any(value.get("checked") for value in plan.health.values()):
         lines.append(
             "preflight checks: local runtime/environment + endpoint DNS only; "
             "provider auth/model availability/quota were NOT verified"
         )
         lines.append(
             "healthcheck: " + "; ".join(
-                f"{name}={'healthy' if value['healthy'] else 'FAILED'}"
+                f"{name}="
+                f"{'skipped' if not value.get('checked') else ('healthy' if value['healthy'] else 'FAILED')}"
                 + (f" ({value.get('detail')})" if value.get("detail") else "")
                 for name, value in plan.health.items()
             )
