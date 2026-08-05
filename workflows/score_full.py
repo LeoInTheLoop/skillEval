@@ -28,7 +28,7 @@ import yaml
 from workflows import metrics
 from contracts import load_cases
 from evaluators import EvaluationContext, evaluate_all
-from evaluators.trajectory import write_trajectory_projection
+from evaluators.trajectory import merge_trajectory_metrics, write_trajectory_projection
 from workflows.grade import load_grading
 from workflows.score_routing import check_gate, describe_dimension, latest_run_dir, warn_uncalibrated
 
@@ -289,7 +289,13 @@ def main() -> None:
             if trajectory_path.exists():
                 trajectory_judge = json.loads(trajectory_path.read_text(encoding="utf-8"))
                 layers["trajectory"]["judge"] = trajectory_judge.get("judge")
-                layers["trajectory"]["metrics"] = trajectory_judge.get("dimension_means", {})
+                judge_metrics = trajectory_judge.get("dimension_means", {})
+                layers["trajectory"]["judge_metrics"] = judge_metrics
+                layers["trajectory"]["metrics"] = merge_trajectory_metrics(
+                    layers["trajectory"].get("metrics") or {},
+                    judge_metrics,
+                    trajectory_cfg.get("mode", "judge"),
+                )
                 layers["trajectory"]["graded"] = len(trajectory_judge.get("graded") or [])
                 layers["trajectory"]["judge_failures"] = len(
                     trajectory_judge.get("judge_failures") or []

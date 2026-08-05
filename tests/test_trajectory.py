@@ -2,10 +2,26 @@ from __future__ import annotations
 
 import json
 
+import pytest
+from pydantic import ValidationError
+
 from adapters.runtimes.openclaw import OpenClawRuntimeAdapter
 from evaluators import available
-from evaluators.trajectory import score_structured
-from contracts import TrajectoryEvent
+from evaluators.base import EvaluationContext
+from evaluators.trajectory import (
+    TrajectoryEvaluator,
+    merge_trajectory_metrics,
+    score_argument_assertions,
+    score_structured,
+)
+from contracts import (
+    ARGUMENT_ASSERTION_SCHEMA_VERSION,
+    ARGUMENT_CORRECTNESS_RUBRIC_VERSION,
+    RoutingCase,
+    SuiteTrajectorySpec,
+    TrajectoryArgumentExpectation,
+    TrajectoryEvent,
+)
 
 
 def _transcript(*entries: dict) -> str:
@@ -13,10 +29,165 @@ def _transcript(*entries: dict) -> str:
 
 
 def test_trajectory_event_requires_tool_name_for_tool_events():
-    import pytest
-
     with pytest.raises(ValueError, match="tool_call/tool_result"):
         TrajectoryEvent(step_index=1, event_type="tool_call", name="search")
+
+
+def test_hybrid_metrics_keep_deterministic_scores_and_use_judge_only_for_na():
+    deterministic = {"argument_correctness": 0.0, "order_correctness": None}
+    judge = {"argument_correctness": 1.0, "order_correctness": 0.75}
+    assert merge_trajectory_metrics(deterministic, judge, "hybrid") == {
+        "argument_correctness": 0.0,
+        "order_correctness": 0.75,
+    }
+    assert merge_trajectory_metrics(deterministic, judge, "judge") == judge
+    assert merge_trajectory_metrics(deterministic, judge, "deterministic") == deterministic
+
+
+@pytest.mark.parametrize("matcher", [
+    {"required": True},
+    {"forbidden": True},
+    {"equals": "out/a.md"},
+    {"in": ["csv", "json"]},
+    {"matches": r"^out/.+\.md$"},
+])
+def test_argument_expectation_supports_one_strict_matcher(matcher):
+    assertion = TrajectoryArgumentExpectation.model_validate({
+        "tool": "write", "path": "options.format", **matcher,
+    })
+    dumped = assertion.model_dump(mode="json", by_alias=True, exclude_none=True)
+    assert set(dumped) == {"tool", "path", next(iter(matcher))}
+
+
+def test_argument_expectation_rejects_ambiguous_or_unsafe_gold_without_echoing_secret():
+    with pytest.raises(ValidationError, match="只能声明一个 matcher"):
+        TrajectoryArgumentExpectation(
+            tool="write", path="path", required=True, equals="out/a.md",
+        )
+
+    secret = "sk-must-not-appear-in-the-error"
+    with pytest.raises(ValidationError) as caught:
+        TrajectoryArgumentExpectation(
+            tool="request", path="api_key", equals=secret,
+        )
+    assert "secret 参数 gold" in str(caught.value)
+    assert secret not in str(caught.value)
+
+    with pytest.raises(ValidationError, match="完整用户内容"):
+        TrajectoryArgumentExpectation(
+            tool="write", path="content", equals="用户原文",
+        )
+    with pytest.raises(ValidationError, match="gold 值过长"):
+        TrajectoryArgumentExpectation(
+            tool="write", path="title", equals="x" * 201,
+        )
+
+    with pytest.raises(ValidationError, match="合法正则"):
+        TrajectoryArgumentExpectation(tool="write", path="path", matches="[")
+
+
+def _argument_run(*calls: tuple[str, str, dict | None]) -> dict:
+    return {
+        "trajectory": [
+            {
+                "step_index": index,
+                "event_type": "tool_call",
+                "name": tool,
+                "tool_name": tool,
+                "call_id": call_id,
+                "arguments": arguments,
+                "status": "started",
+                "evidence_level": "exact",
+            }
+            for index, (call_id, tool, arguments) in enumerate(calls, 1)
+        ]
+    }
+
+
+def test_argument_correctness_scores_path_matchers_across_multiple_calls_with_refs():
+    run = _argument_run(
+        ("c1", "write", {"path": "out/a.csv", "options": {"format": "csv"}}),
+        ("c2", "write", {"path": "out/a.md", "options": {"format": "markdown"}}),
+    )
+    assertions = [
+        {"tool": "write", "path": "path", "equals": "out/a.md"},
+        {"tool": "write", "path": "options.format", "in": ["csv", "json"]},
+        {"tool": "write", "path": "path", "matches": r"^out/.+\.csv$"},
+        {"tool": "write", "path": "options", "required": True},
+        {"tool": "write", "path": "unsafe", "forbidden": True},
+    ]
+
+    score, details = score_argument_assertions(run, assertions)
+
+    assert score == 1.0
+    assert all(item["status"] == "passed" for item in details)
+    assert details[0]["evidence_refs"] == [
+        "call_id=c1", "step_index=1", "call_id=c2", "step_index=2",
+    ]
+    assert details[1]["assertion"]["in"] == ["csv", "json"]
+
+
+def test_argument_correctness_distinguishes_wrong_missing_tool_and_missing_evidence():
+    wrong = _argument_run(("c1", "write", {"path": "out/wrong.md"}))
+    gold = [{"tool": "write", "path": "path", "equals": "out/right.md"}]
+    assert score_argument_assertions(wrong, gold)[0] == 0.0
+
+    missing_tool = _argument_run(("c1", "read", {"path": "out/right.md"}))
+    assert score_argument_assertions(missing_tool, gold)[0] == 0.0
+
+    coarse = {
+        "trajectory": [{
+            "step_index": 1, "event_type": "tool_call", "name": "write",
+            "tool_name": "write", "evidence_level": "coarse",
+        }]
+    }
+    assert score_argument_assertions(coarse, gold)[0] is None
+
+    absent_arguments = _argument_run(("c1", "write", None))
+    score, details = score_argument_assertions(absent_arguments, gold)
+    assert score is None and details[0]["status"] == "insufficient_evidence"
+
+
+def test_redacted_or_truncated_argument_is_na_and_never_echoed_as_mismatch_evidence():
+    run = _argument_run(
+        ("c1", "write", {"path": "out/a…[truncated at 5 of 20 chars]"}),
+    )
+    gold = [{"tool": "write", "path": "path", "equals": "out/a.md"}]
+    score, details = score_argument_assertions(run, gold)
+    assert score is None
+    assert "out/a" not in details[0]["evidence"]
+
+
+def test_trajectory_evaluator_emits_argument_evidence_and_versioned_rubric():
+    case = RoutingCase.model_validate({
+        "id": "demo-pos-01",
+        "prompt": "write",
+        "expect_trajectory": {
+            "argument_assertions": [
+                {"tool": "write", "path": "path", "equals": "out/a.md"},
+            ],
+        },
+    })
+    suite_trajectory = SuiteTrajectorySpec(enabled=True, mode="deterministic")
+    suite = {"scoring": {"trajectory": suite_trajectory.model_dump(mode="json")}}
+    report = TrajectoryEvaluator().evaluate(EvaluationContext(
+        suite=suite,
+        snapshot={"suite": suite},
+        cases={case.id: case},
+        runs=[{"case_id": case.id, "repeat_index": 0, "turn_index": 1,
+               **_argument_run(("c1", "write", {"path": "out/a.md"}))}],
+    ))
+
+    assert report["metrics"]["argument_correctness"] == 1.0
+    assert report["structured"][0]["argument_assertions"][0]["score"] == 1.0
+    assert report["versions"] == {
+        "trajectory": "trajectory-v1",
+        "argument_assertion_schema": ARGUMENT_ASSERTION_SCHEMA_VERSION,
+        "argument_correctness_rubric": ARGUMENT_CORRECTNESS_RUBRIC_VERSION,
+    }
+    assert suite["scoring"]["trajectory"]["argument_schema_version"] == (
+        ARGUMENT_ASSERTION_SCHEMA_VERSION
+    )
 
 
 def test_structured_trajectory_uses_coarse_tool_evidence_but_does_not_invent_order():

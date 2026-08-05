@@ -94,7 +94,7 @@ Efficiency
 | 维度 | 证据 | 结论 |
 | --- | --- | --- |
 | `tool_selection` | toolSummary + 逐次事件 | exact |
-| `argument_correctness` | 逐次 `arguments` | 证据到位；确定性判定缺 gold 字段，先由 judge 判 |
+| `argument_correctness` | 逐次 `arguments` + `argument_assertions` gold | 有 exact 参数时确定性判；证据缺失时 N/A |
 | `order_correctness` | 事件顺序 + `call_id` | exact，`required_order` 直接出数 |
 | `state_persistence` | workspace 前后快照 + artifact hash | 可评估 |
 | `verification_rate` | 题目声明的 probe tool + read-back 顺序 | 声明了才出数，见下 |
@@ -138,9 +138,22 @@ Efficiency
   "required_state_change": true,
   "required_verification": true,
   "verification_tools": ["inspect"],
+  "argument_assertions": [
+    {"tool": "mutate", "path": "path", "equals": "out/result.md"},
+    {"tool": "mutate", "path": "options.format", "in": ["md", "markdown"]},
+    {"tool": "mutate", "path": "unsafe", "forbidden": true}
+  ],
   "assertions": ["最终回答不能只靠口头声明完成"]
 }
 ```
+
+`argument_assertions` 的 `path` 是相对 tool `arguments` 的点分路径；每条只能写一个
+matcher：`required`、`forbidden`、`equals`、`in` 或 `matches`。多个同名 tool 调用中
+任意一次满足正向 matcher 即通过；`forbidden` 要求所有相关调用都不含该路径。不要写
+完整 arguments 字符串、secret、完整用户内容、时间戳或临时目录。评分结果为每条断言保存
+`call_id` / `step_index` 引用；只有 coarse 事件、参数缺失、脱敏或截断时记 N/A。
+当前 rubric 尚未登记人工校准，因此 `argument_correctness` 只能出数，suite 若把它写入
+gate 会在运行前拒绝；完成小批人工 gold 校准和校准注册表后再开放 gate。
 
 结构化字段先由 deterministic evaluator 判；`assertions` 由第一版通用 judge 判。
 未来某个 skill 需要更细的参数 schema、状态机或副作用规则时，新增 evaluator 文件

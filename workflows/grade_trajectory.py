@@ -63,7 +63,9 @@ def trajectory_path(run_dir: Path, judge_id: str) -> Path:
 def build_prompt(case, run: dict[str, Any], dimensions: list[str]) -> str:
     turn = case.resolved_turn(int(run.get("turn_index") or 1))
     expectation = (
-        turn.expect_trajectory.model_dump(mode="json")
+        turn.expect_trajectory.model_dump(
+            mode="json", by_alias=True, exclude_none=True, exclude_defaults=True,
+        )
         if turn.expect_trajectory else None
     )
     events = run.get("trajectory") or []

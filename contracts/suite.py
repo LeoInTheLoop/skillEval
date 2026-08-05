@@ -14,7 +14,11 @@ import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
 from .runtime import NetworkMode, SkillMode
-from .trajectory import TRAJECTORY_DIMENSIONS
+from .trajectory import (
+    ARGUMENT_ASSERTION_SCHEMA_VERSION,
+    ARGUMENT_CORRECTNESS_RUBRIC_VERSION,
+    TRAJECTORY_DIMENSIONS,
+)
 from .skill import VERSION_DIR
 
 _ENV_NAME = r"^[A-Za-z_][A-Za-z0-9_]*$"
@@ -196,6 +200,13 @@ class SuiteTrajectorySpec(_StrictModel):
     judge_id: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_.-]+$")
     dimensions: list[str] = Field(default_factory=lambda: list(TRAJECTORY_DIMENSIONS))
     version: str = "trajectory-v1"
+    # 量具版本必须随 suite 进入 snapshot；改 matcher 语义时换版本，历史分才可审计。
+    argument_schema_version: Literal[ARGUMENT_ASSERTION_SCHEMA_VERSION] = (
+        ARGUMENT_ASSERTION_SCHEMA_VERSION
+    )
+    argument_rubric_version: Literal[ARGUMENT_CORRECTNESS_RUBRIC_VERSION] = (
+        ARGUMENT_CORRECTNESS_RUBRIC_VERSION
+    )
 
     @model_validator(mode="after")
     def _known_dimensions(self) -> "SuiteTrajectorySpec":
@@ -247,6 +258,11 @@ class SuiteScoringSpec(_StrictModel):
             raise ValueError("scoring.metrics 不能重复")
         if len(self.evaluators) != len(set(self.evaluators)):
             raise ValueError("scoring.evaluators 不能重复")
+        if "argument_correctness" in self.gate:
+            raise ValueError(
+                "argument_correctness 的 deterministic rubric 尚未登记人工校准，"
+                "当前只能出数、不能进入 gate"
+            )
         from evaluators import available
         unknown_evaluators = sorted(set(self.evaluators) - set(available()))
         if unknown_evaluators:

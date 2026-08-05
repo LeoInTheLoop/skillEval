@@ -48,9 +48,11 @@ scoring:
     tool_selection: ">= 0.80"
   trajectory:
     enabled: true
-    mode: judge
+    mode: hybrid
     judge_id: glm5
     dimensions: [tool_selection, argument_correctness, order_correctness, state_persistence, verification_rate]
+    argument_schema_version: trajectory-argument-assertion-v1
+    argument_rubric_version: argument-correctness-v1
   judge:
     id: glm5
     model: openai/glm-5.1

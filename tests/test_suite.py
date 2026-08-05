@@ -158,6 +158,13 @@ def test_gate_条件语法在运行前校验(condition):
         RoutingSuite.model_validate(data)
 
 
+def test_argument_correctness_校准前只能出数不能进_gate():
+    data = _valid_suite()
+    data["scoring"]["gate"] = {"argument_correctness": ">= 0.80"}
+    with pytest.raises(ValidationError, match="尚未登记人工校准"):
+        RoutingSuite.model_validate(data)
+
+
 def test_suite_禁止明文_secret_但允许环境变量或secret_id():
     data = _valid_suite()
     data["runtime_options"] = {"api_key": "sk-plaintext"}

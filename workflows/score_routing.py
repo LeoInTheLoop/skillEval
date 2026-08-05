@@ -24,7 +24,7 @@ from sklearn.metrics import classification_report, confusion_matrix
 from workflows import metrics
 from contracts import load_cases
 from evaluators import EvaluationContext, evaluate_all
-from evaluators.trajectory import write_trajectory_projection
+from evaluators.trajectory import merge_trajectory_metrics, write_trajectory_projection
 from workflows.diagnostics import failure_summary
 from workflows.grade import load_grading
 
@@ -352,7 +352,13 @@ def main() -> None:
             if trajectory_path.exists():
                 trajectory_report = json.loads(trajectory_path.read_text(encoding="utf-8"))
                 layers["trajectory"]["judge"] = trajectory_report.get("judge")
-                layers["trajectory"]["metrics"] = trajectory_report.get("dimension_means", {})
+                judge_metrics = trajectory_report.get("dimension_means", {})
+                layers["trajectory"]["judge_metrics"] = judge_metrics
+                layers["trajectory"]["metrics"] = merge_trajectory_metrics(
+                    layers["trajectory"].get("metrics") or {},
+                    judge_metrics,
+                    trajectory_cfg.get("mode", "judge"),
+                )
                 layers["trajectory"]["graded"] = len(trajectory_report.get("graded") or [])
     for layer in ("outcome", "trajectory"):
         if layer in layers:
