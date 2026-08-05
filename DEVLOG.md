@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-05 (UX-02) · SkillHub `_meta.json` 让失败后的 init 永远无法续跑
+
+第 5 次更新后的普通用户模拟里，`meeting-and-brief@1.5.0` 明明与已有 V1 byte-identical，
+`pipeline init` 却把 snapshot 判成 conflict；生成调用失败后的提示还承诺“重跑同一命令会安全
+复用”，使恢复路径与真实行为相反。
+
+根因是比较口径不对称：source manifest 包含 SkillHub 根目录 `_meta.json`，destination
+manifest 排除了 skillEval 自己覆盖写入的同名文件。现在 `workflows.import_skill` 提供唯一的
+`snapshot_content_manifest()`，source/destination 都使用它；只排除根目录控制元数据，嵌套
+同名文件仍算普通内容。import provenance 额外保存实际评测内容 manifest hash 和上游 meta
+hash。真实模拟留下的两份临时 snapshot 已回放为 `reusable`；修改 `SKILL.md` 仍明确
+`conflict`。
+
+这次只修幂等/续跑契约，不顺手混入生成器 repair、默认模型或 Docker 提示；它们按 handoff
+的更新 7–9 分开提交。
+
+**验证基线：368 passed / 1 skipped。**
+
+---
+
 ## 2026-07-28 (UX-01) · 拿一个真下载的 skill 走一遍全流程，把踩到的 11 个坑全修了
 
 **怎么发现的**：不写代码、只当用户 —— 从 skillhub 装 `meeting-and-brief`（1.5.0，622 行

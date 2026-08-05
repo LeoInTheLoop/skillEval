@@ -309,6 +309,13 @@ def test_pipeline_init生成失败后快照可安全复用(tmp_path, monkeypatch
     from pipeline.initialize import build_init_plan, execute_init
 
     source = _installed_skill(tmp_path)
+    # SkillHub installations carry their own root _meta.json.  Import replaces
+    # that transport metadata with skillEval provenance, so comparison must
+    # exclude it on both sides rather than treating the retry as a conflict.
+    (source / "_meta.json").write_text(
+        json.dumps({"slug": "alpha", "version": "1.2.3"}),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("MODEL_KEY", "real-test-key")
     monkeypatch.setenv("MODEL_BASE", "https://generator.example.test/v1")
     monkeypatch.setattr("pipeline.initialize.load_dotenv", lambda *_: False)
@@ -334,6 +341,60 @@ def test_pipeline_init生成失败后快照可安全复用(tmp_path, monkeypatch
 
     assert Path(first.snapshot_destination).is_dir()
     assert not Path(first.draft_output).exists()
+    imported_meta = json.loads(
+        (Path(first.snapshot_destination) / "_meta.json").read_text(encoding="utf-8")
+    )
+    assert imported_meta["snapshot_content_hash"].startswith("sha256:")
+    assert imported_meta["upstream_meta_sha256"].startswith("sha256:")
     retry = build_init_plan(**kwargs)
     assert retry.runnable
     assert retry.snapshot_state == "reusable"
+
+    # Updating registry/install metadata alone does not alter evaluated skill
+    # content and remains reusable.
+    (source / "_meta.json").write_text(
+        json.dumps({"slug": "alpha", "version": "1.2.4"}),
+        encoding="utf-8",
+    )
+    assert build_init_plan(**kwargs).snapshot_state == "reusable"
+
+
+def test_pipeline_init仍拒绝复用内容不同的快照(tmp_path, monkeypatch):
+    from pipeline.initialize import build_init_plan, execute_init
+
+    source = _installed_skill(tmp_path)
+    (source / "_meta.json").write_text(
+        json.dumps({"slug": "alpha", "version": "1.2.3"}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("MODEL_KEY", "real-test-key")
+    monkeypatch.setenv("MODEL_BASE", "https://generator.example.test/v1")
+    monkeypatch.setattr("pipeline.initialize.load_dotenv", lambda *_: False)
+    kwargs = {
+        "source_path": source,
+        "acceptance": "明确任务应激活；普通聊天拒绝",
+        "dest_root": tmp_path / "subjects",
+        "output_dir": tmp_path / "draft",
+        "count": 3,
+        "api_base_env": "MODEL_BASE",
+        "api_key_env": "MODEL_KEY",
+    }
+    first = build_init_plan(**kwargs)
+    with pytest.raises(RuntimeError):
+        execute_init(
+            first,
+            acceptance=kwargs["acceptance"],
+            api_base_env="MODEL_BASE",
+            api_key_env="MODEL_KEY",
+            completion=lambda **_: (_ for _ in ()).throw(ConnectionError("down")),
+        )
+
+    (source / "SKILL.md").write_text(
+        (source / "SKILL.md").read_text(encoding="utf-8") + "\n真实能力变化\n",
+        encoding="utf-8",
+    )
+    retry = build_init_plan(**kwargs)
+
+    assert retry.snapshot_state == "conflict"
+    assert not retry.runnable
+    assert "拒绝覆盖" in " ".join(retry.blocked_reasons)

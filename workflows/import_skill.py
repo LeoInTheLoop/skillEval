@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import shutil
 from datetime import datetime
@@ -11,6 +12,31 @@ import frontmatter
 
 ROOT = Path(__file__).parent.parent
 IGNORED_IMPORT_NAMES = {".git", ".env", "__pycache__", ".DS_Store"}
+IMPORT_META_NAME = "_meta.json"
+
+
+def snapshot_content_manifest(root: Path) -> dict[str, str]:
+    """Hash files that become evaluated snapshot content.
+
+    The root ``_meta.json`` is transport/import metadata: SkillHub may provide
+    one and skillEval replaces it with its own provenance record.  It must
+    therefore be excluded symmetrically for both source and destination.
+    Nested files with that name remain ordinary skill content.
+    """
+    manifest: dict[str, str] = {}
+    for path in sorted(item for item in root.rglob("*") if item.is_file()):
+        relative = path.relative_to(root)
+        if any(part in IGNORED_IMPORT_NAMES for part in relative.parts):
+            continue
+        if relative.as_posix() == IMPORT_META_NAME:
+            continue
+        manifest[relative.as_posix()] = hashlib.sha256(path.read_bytes()).hexdigest()
+    return manifest
+
+
+def _manifest_hash(manifest: dict[str, str]) -> str:
+    canonical = json.dumps(manifest, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode()).hexdigest()
 
 
 def resolve_source(path: str | Path) -> Path:
@@ -64,8 +90,14 @@ def import_snapshot(
         "source": public_source_label(source),
         "skill_id": skill_id,
         "version_dir": version,
+        "snapshot_content_hash": _manifest_hash(snapshot_content_manifest(source)),
     }
-    (destination / "_meta.json").write_text(
+    source_meta = source / IMPORT_META_NAME
+    if source_meta.is_file():
+        meta["upstream_meta_sha256"] = "sha256:" + hashlib.sha256(
+            source_meta.read_bytes()
+        ).hexdigest()
+    (destination / IMPORT_META_NAME).write_text(
         json.dumps(meta, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )

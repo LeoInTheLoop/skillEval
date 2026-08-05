@@ -22,11 +22,11 @@ from workflows.gen_cases import (
     resolve_skill_source,
 )
 from workflows.import_skill import (
-    IGNORED_IMPORT_NAMES,
     ROOT,
     import_snapshot,
     resolve_source,
     skill_id_for,
+    snapshot_content_manifest,
 )
 
 
@@ -34,24 +34,12 @@ def _sha_text(text: str) -> str:
     return "sha256:" + hashlib.sha256(text.encode()).hexdigest()[:16]
 
 
-def _file_manifest(root: Path, *, ignore_import_meta: bool = False) -> dict[str, str]:
-    manifest = {}
-    for path in sorted(item for item in root.rglob("*") if item.is_file()):
-        relative = path.relative_to(root).as_posix()
-        if any(part in IGNORED_IMPORT_NAMES for part in path.relative_to(root).parts):
-            continue
-        if ignore_import_meta and relative == "_meta.json":
-            continue
-        manifest[relative] = hashlib.sha256(path.read_bytes()).hexdigest()
-    return manifest
-
-
 def snapshot_state(source: Path, destination: Path) -> tuple[str, str | None]:
     """Return new/reusable/conflict without mutating either directory."""
     if not destination.exists():
         return "new", None
-    source_files = _file_manifest(source)
-    destination_files = _file_manifest(destination, ignore_import_meta=True)
+    source_files = snapshot_content_manifest(source)
+    destination_files = snapshot_content_manifest(destination)
     if source_files == destination_files:
         return "reusable", None
     return (
