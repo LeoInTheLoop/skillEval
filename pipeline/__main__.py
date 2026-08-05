@@ -27,6 +27,7 @@ from .plan import build_plan, render_plan
 from .plan import endpoint_health
 from .rescore import build_rescore_plan, execute_rescore, parse_stages as parse_rescore_stages
 from .rescore import render_rescore_plan
+from .viewer import filter_records, inspect_run, render_inspection
 
 
 def _run_command(command: list[str]) -> None:
@@ -215,6 +216,17 @@ def main() -> None:
     )
     unarchive_parser.add_argument("--json", action="store_true", help="emit the restore plan as JSON")
 
+    inspect_parser = sub.add_parser(
+        "inspect",
+        help="read one immutable run and show filterable case/turn/repeat evidence",
+    )
+    inspect_parser.add_argument("--run-dir", required=True, help="exact run execution directory")
+    inspect_parser.add_argument("--case", help="show one exact case id")
+    inspect_parser.add_argument("--status", choices=("ok", "failed", "skipped"))
+    inspect_parser.add_argument("--skill", help="match expected, selected, or loaded skill")
+    inspect_parser.add_argument("--model", help="case-insensitive substring of observed model")
+    inspect_parser.add_argument("--json", action="store_true", help="emit the inspection as JSON")
+
     args = parser.parse_args()
     if args.command == "init":
         acceptance = (
@@ -355,6 +367,25 @@ def main() -> None:
         print("\nRESCORED", flush=True)
         for name, path in outputs.items():
             print(f"  {name}: {path}", flush=True)
+        return
+
+    if args.command == "inspect":
+        try:
+            view = inspect_run(args.run_dir, root=ROOT)
+        except (FileNotFoundError, ValueError, json.JSONDecodeError) as error:
+            raise SystemExit(f"cannot inspect run: {error}") from error
+        view["records"] = filter_records(
+            view["records"],
+            case_id=args.case,
+            status=args.status,
+            skill=args.skill,
+            model=args.model,
+        )
+        view["matching_record_count"] = len(view["records"])
+        print(
+            json.dumps(view, indent=2, ensure_ascii=False)
+            if args.json else render_inspection(view)
+        )
         return
 
     if args.command == "plan":

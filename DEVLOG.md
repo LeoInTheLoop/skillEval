@@ -4,6 +4,19 @@
 
 ---
 
+## 2026-08-05 (P7-1) · 单次 run 的全链路只读检查入口
+
+新增 `pipeline inspect --run-dir ...`，把原本散在 snapshot、冻结 dataset、runs、scores、
+report、grading 和 improvements 的事实投影到一个 `run-inspection-v1` 结构。终端先显示 verdict、
+真实模型、全局状态与所有证据文件路径，再按 case/turn/repeat 展开问题、输出、Skill、tool、
+artifact 和结构化错误；`--json` 输出同一结构，可组合 `--case/--status/--skill/--model` 过滤。
+
+入口严格只读，不重算分、不回写原始结果。过滤命中数和总数分开显示；零命中会列出真实
+case id，避免用户把拼错过滤条件误读成空 run。真实 meeting-and-brief full 历史 run 已回放，
+能从一条命令定位到具体问题、模型回答、各版本 Judge 报告与改进建议。
+
+**验证基线：388 passed / 1 skipped。**
+
 ## 2026-08-05 (P3 验收) · PDF V1 能力基准真实外发通过
 
 P3 最后一条一直只有 mock 语义契约，没有证明真实建议模型看同一批失败轨迹时也能得出人工

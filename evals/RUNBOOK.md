@@ -348,6 +348,26 @@ Git 已跟踪的产品示例同样只收包、不删除。
 > `archives/` 默认被 Git 忽略，因为包内含私有 skill、题目和模型输出。同一块磁盘上的归档
 > 解决的是工作区整洁和迁移，不等于异地备份。
 
+### 3.2 一条命令追到单题证据
+
+aggregate report 负责回答“总体好不好”；定位一次具体失败时，不必手工在 YAML/JSON/HTML
+之间来回找：
+
+```bash
+# 只读，不生成或修改任何 run 产物
+.venv/bin/python -m pipeline inspect --run-dir outputs/<group>/<execution-id>
+
+# case / status / skill / model 可组合过滤；--json 给后续脚本消费
+.venv/bin/python -m pipeline inspect --run-dir outputs/<group>/<execution-id> \
+  --case <case-id> --status failed --skill <skill-id> --model <model-substring>
+.venv/bin/python -m pipeline inspect --run-dir outputs/<group>/<execution-id> --json
+```
+
+视图先给 release verdict、真实执行模型和状态计数，再按 case/turn/repeat 展开问题、期望/实际
+skill、输出、tool、artifact 与结构化错误；同时列出 snapshot、冻结 dataset、runs、scores、
+HTML、各版本 Judge grading 和改进建议的确切路径。过滤后仍保留总记录数；没有命中时列出
+可用 case id，避免把拼错过滤条件误读成“run 没数据”。该入口只读历史事实，不重新评分。
+
 ---
 
 ## 4. 怎么跑

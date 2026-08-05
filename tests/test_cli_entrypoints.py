@@ -70,6 +70,19 @@ def test_pipeline_rescore子命令_help_可用(monkeypatch, capsys):
     assert "--confirm-egress" in out
 
 
+def test_pipeline_inspect子命令_help_可用(monkeypatch, capsys):
+    from pipeline import __main__ as pipeline_main
+
+    monkeypatch.setattr(sys, "argv", ["pipeline", "inspect", "--help"])
+    with pytest.raises(SystemExit) as exit_info:
+        pipeline_main.main()
+    assert exit_info.value.code == 0
+    out = capsys.readouterr().out
+    assert "--run-dir" in out
+    assert "--case" in out
+    assert "--status" in out
+
+
 @pytest.mark.parametrize(
     ("command", "expected"),
     [
