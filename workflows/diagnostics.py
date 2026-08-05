@@ -13,6 +13,32 @@ from typing import Any
 from contracts import RoutingCase
 
 
+def self_judge_warnings(
+    suite: dict[str, Any], *, observed_models: Iterable[str] = ()
+) -> list[str]:
+    """Warn when the candidate model is also configured as its own judge."""
+    judge = ((suite.get("scoring") or {}).get("judge") or {})
+    judge_model = judge.get("model")
+    if not judge_model:
+        return []
+    execution_models = {
+        model.get("model")
+        for model in suite.get("models", [])
+        if isinstance(model, dict) and model.get("model")
+    }
+    runtime_model = (suite.get("runtime_options") or {}).get("model")
+    if runtime_model:
+        execution_models.add(runtime_model)
+    execution_models.update(model for model in observed_models if model)
+    if judge_model not in execution_models:
+        return []
+    return [
+        f"execution model and judge model are both `{judge_model}`; this is self-judging. "
+        "Keep its semantic scores diagnostic-only, or configure an independent judge before "
+        "using them for improvement/release decisions."
+    ]
+
+
 def gate_coverage_warnings(cases: Iterable[RoutingCase], gate: dict[str, str]) -> list[str]:
     """Explain gates that have no eligible case and would otherwise become N/A.
 

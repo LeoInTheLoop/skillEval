@@ -127,6 +127,41 @@ def test_endpoint_health_把_dns_故障变成可操作的预检提示(monkeypatc
     assert "network/DNS" in detail
 
 
+def test普通pipeline在执行模型等于judge时预警(monkeypatch):
+    from contracts import RoutingSuite, load_suite
+    from pipeline import plan as plan_module
+
+    suite = load_suite("evals/suites/example_routing.yaml").canonical_dict()
+    tested_model = suite["models"][0]["model"]
+    suite["scoring"]["judge"] = {
+        "id": "same-model",
+        "model": tested_model,
+        "api_base_env": "JUDGE_BASE_URL",
+        "api_key_env": "JUDGE_API_KEY",
+        "params": {},
+        "dimensions": [],
+    }
+    monkeypatch.setattr(
+        plan_module, "load_suite", lambda _path: RoutingSuite.model_validate(suite)
+    )
+
+    plan = build_plan("evals/suites/example_routing.yaml")
+
+    assert any("self-judging" in warning for warning in plan.warnings)
+    assert "diagnostic-only" in render_plan(plan)
+
+
+def test不同judge不产生自己评自己误报():
+    from workflows.diagnostics import self_judge_warnings
+
+    suite = {
+        "models": [{"id": "candidate", "model": "openai/candidate"}],
+        "runtime_options": {},
+        "scoring": {"judge": {"id": "judge", "model": "openai/independent"}},
+    }
+    assert self_judge_warnings(suite) == []
+
+
 def test_real_plan_明确列出外发内容和单独授权(monkeypatch):
     monkeypatch.setenv("MODEL_BASE", "https://api.example.test/v1")
     from pipeline.plan import PlannedModel, build_egress_manifest

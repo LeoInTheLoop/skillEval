@@ -31,7 +31,7 @@ from contracts import (
     resolve_suite_references,
 )
 from workflows.matrix import build_matrix
-from workflows.diagnostics import gate_coverage_warnings
+from workflows.diagnostics import gate_coverage_warnings, self_judge_warnings
 from workflows.run_routing import (
     ROOT,
     build_environment,
@@ -414,6 +414,8 @@ def build_plan(
         unreachable_gold_warnings(cases, skills, suite["skills"]["mode"])
     )
     warnings.extend(gate_coverage_warnings(cases, suite["scoring"].get("gate", {})))
+    if not mock:
+        warnings.extend(self_judge_warnings(suite))
 
     blocked: list[str] = []
     if dataset_review_status(dataset_path) == "DRAFT":

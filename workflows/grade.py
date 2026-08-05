@@ -34,6 +34,7 @@ from dotenv import load_dotenv
 from pydantic import BaseModel, ConfigDict, Field
 
 from workflows import dimensions as dims
+from workflows.diagnostics import self_judge_warnings
 from contracts import FullEvalTurn, RoutingCase, RunResult, SuiteJudgeSpec, load_cases
 from judges.llm import LLMJudge, call_litellm as _shared_call_litellm, extract_json as _extract_json
 
@@ -639,6 +640,18 @@ def main() -> None:
         )
 
     judge = resolve_judge(snapshot, args)
+    observed_models = []
+    runs_path = run_dir / "runs.jsonl"
+    if runs_path.is_file():
+        for line in runs_path.read_text(encoding="utf-8").splitlines():
+            if not line.strip():
+                continue
+            run = RunResult.model_validate_json(line)
+            observed_models.extend([run.resolved_model or "", run.model or ""])
+    for warning in self_judge_warnings(
+        snapshot.get("suite") or {}, observed_models=observed_models
+    ):
+        print(f"⚠️ {warning}")
     require_judge_credentials(judge)
     active_dims = dims.resolve(judge.dimensions)
 

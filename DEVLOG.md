@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-05 (P4 收尾) · 普通 pipeline 与 grade 都能识别 self-judge
+
+P4 最后一条验收原本只在 immutable rescore 里实现：普通 `pipeline plan/run` 即使 suite 的
+执行模型与 `scoring.judge.model` 完全相同也没有提示；OpenClaw 的 suite 配置有时不写真实
+模型，只有运行后的 `RunResult.resolved_model` 才能知道，更容易漏掉。
+
+新增通用 `self_judge_warnings()`：plan 比较 `models[].model` 与
+`runtime_options.model`；直接 `workflows.grade` 还读取已归档 runs 的 `resolved_model/model`。
+精确命中时两条入口都会标 `self-judging`，明确语义分只可诊断，换独立 judge 后才可用于
+改进/发布。mock plan 不误报；不同模型不误报。只警告不阻断，因为用户可能有意做量具研究，
+且 calibrated gate 的独立资格检查仍是最终硬边界。
+
+**验证基线：381 passed / 1 skipped。**
+
+---
+
 ## 2026-08-05 (UX-05) · Docker full preflight 给出能执行的恢复路径
 
 第 5 次普通用户模拟在 full eval 前被 `SKILLEVAL_OPENCLAW_IMAGE` 缺失挡住；原错误只说

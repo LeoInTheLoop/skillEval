@@ -450,6 +450,9 @@ profile 配置而把 agent 调用串行化；Docker backend 每 conversation 一
 # 2c. judge 的凭据默认走独立的 JUDGE_BASE_URL / JUDGE_API_KEY。**.env 里没有它们时
 #     grade.py 会在外发之前就报错**，并列出当前已配好的 key 变量供你改指向。
 #     共用端点没关系，共用同一个 model 才有关系（考生不能改自己的卷子）。
+#     pipeline plan 会比较 suite 里的执行模型/runtime_options.model；grade 还会读取
+#     RunResult.resolved_model。发现与 judge.model 相同会显式标 self-judging，语义分只可诊断，
+#     不应用于改进或发布决策。字符串不同但实际指向同一 provider alias 时仍需人工确认。
 
 # 2d. 标准维度进 gate 前，离线对齐人工连续分（此命令不调用模型）
 .venv/bin/python -m workflows.calibrate_dimensions \
