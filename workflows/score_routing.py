@@ -26,10 +26,11 @@ from contracts import load_cases
 from evaluators import EvaluationContext, evaluate_all
 from evaluators.trajectory import merge_trajectory_metrics, write_trajectory_projection
 from workflows.diagnostics import failure_summary
-from workflows.grade import load_grading
+from workflows.grade import load_grading, resolve_run_dataset
 
 ROOT = Path(__file__).parent.parent
 NONE = "∅"  # No-Skill 标签
+SCORE_VERSION = "score-routing-v1"
 
 
 def top1(sel: list[str]) -> str:
@@ -100,7 +101,8 @@ def print_failure_summary(summary: dict) -> None:
 
 
 def write_no_evaluable_report(d: Path, *, suite: dict, snap: dict, summary: dict,
-                              attempted: int, n_cases: int, html_path: str) -> None:
+                              attempted: int, n_cases: int, html_path: str,
+                              scores_path: str | Path | None = None) -> None:
     """Persist a useful report even when every request failed externally."""
     gate_cfg = suite.get("scoring", {}).get("gate", {}) or {}
     gate = [
@@ -123,8 +125,9 @@ def write_no_evaluable_report(d: Path, *, suite: dict, snap: dict, summary: dict
         "gate_enforced": not bool(snap.get("mock")),
         "gate_pass": None,
     }
-    (d / "scores.json").write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    score_target = Path(scores_path) if scores_path is not None else d / "scores.json"
+    score_target.parent.mkdir(parents=True, exist_ok=True)
+    score_target.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
     actions = "".join(
         f"<li><b>{item['category']}</b>: {item['action']}</li>" for item in summary["remediation"]
     ) or "<li>runs.jsonl is empty; inspect the runner output.</li>"
@@ -147,19 +150,34 @@ def main() -> None:
     ap.add_argument("--cases", help="默认从该 run 的 config.snapshot.yaml 里读")
     ap.add_argument("--runs", help="默认 {dir}/runs.jsonl")
     ap.add_argument("--html", help="默认 {dir}/report.html")
+    ap.add_argument("--scores-output", help="默认 {dir}/scores.json")
+    ap.add_argument("--trajectory-output", help="默认 {dir}/trajectory.jsonl")
+    ap.add_argument("--grading-file", help="显式读取一份版本化 grading JSON")
+    ap.add_argument("--no-grading", action="store_true", help="不并入任何输出 Judge 结果")
+    ap.add_argument("--trajectory-grading-file", help="显式读取一份 trajectory grading JSON")
+    ap.add_argument("--no-trajectory-grading", action="store_true",
+                    help="不并入任何 trajectory Judge 结果")
     ap.add_argument("--judge-id", help="并入哪个 judge 的 assertion 判定；"
                                        "默认取 suite 的 scoring.judge.id")
     args = ap.parse_args()
+    if args.no_grading and args.grading_file:
+        ap.error("--no-grading 与 --grading-file 不能同时使用")
+    if args.no_trajectory_grading and args.trajectory_grading_file:
+        ap.error("--no-trajectory-grading 与 --trajectory-grading-file 不能同时使用")
 
     d = Path(args.dir) if args.dir else latest_run_dir()
     args.runs = args.runs or str(d / "runs.jsonl")
     args.html = args.html or str(d / "report.html")
+    scores_output = Path(args.scores_output) if args.scores_output else d / "scores.json"
+    trajectory_output = (
+        Path(args.trajectory_output) if args.trajectory_output else d / "trajectory.jsonl"
+    )
 
     # 配置快照是这次 run 的唯一真相：数据集、门槛都从它读，不靠人记 CLI 参数
     snap_path = d / "config.snapshot.yaml"
     snap = yaml.safe_load(snap_path.read_text(encoding="utf-8")) if snap_path.exists() else {}
     suite = snap.get("suite", {})
-    cases_path = args.cases or (ROOT / suite["dataset"] if suite.get("dataset") else None)
+    cases_path = args.cases or (resolve_run_dataset(d, snap) if suite.get("dataset") else None)
     if cases_path is None:
         raise SystemExit(f"{d} 缺 config.snapshot.yaml，请显式给 --cases")
     print(f"run dir: {d.name}")
@@ -192,7 +210,7 @@ def main() -> None:
             "y_true": top1(c.expected_skills),
             "y_pred": top1(r["selected_skills"]),
         })
-    write_trajectory_projection(d, all_runs)
+    write_trajectory_projection(d, all_runs, trajectory_output)
     df = pd.DataFrame(rows)
     failures = failure_summary(all_runs)
     if df.empty:
@@ -200,7 +218,7 @@ def main() -> None:
         print_failure_summary(failures)
         write_no_evaluable_report(
             d, suite=suite, snap=snap, summary=failures, attempted=len(all_runs),
-            n_cases=len(cases), html_path=args.html,
+            n_cases=len(cases), html_path=args.html, scores_path=scores_output,
         )
         print(f"\nscores.json + report.html → {d}")
         return
@@ -308,7 +326,9 @@ def main() -> None:
             print(f"  {f['case_id']:<24} {f['passed']}/{f['runs']} 判对")
 
     # --- 维度评分 + 发布门槛 ---
-    grading = load_grading(d, snap, args.judge_id)
+    grading = None if args.no_grading else load_grading(
+        d, snap, args.judge_id, args.grading_file
+    )
     judge = (grading or {}).get("judge")
     scores = {
         "exact_set_match": float(exact_match),
@@ -345,10 +365,15 @@ def main() -> None:
                        or ["outcome", "trajectory", "reliability", "efficiency"])
     layers = evaluate_all(evaluator_names, layer_context)
     trajectory_cfg = (suite.get("scoring", {}).get("trajectory") or {})
-    if trajectory_cfg.get("enabled") and "trajectory" in layers:
+    if (trajectory_cfg.get("enabled") and "trajectory" in layers
+            and not args.no_trajectory_grading):
         trajectory_judge_id = trajectory_cfg.get("judge_id") or (judge or {}).get("id")
         if trajectory_judge_id:
-            trajectory_path = d / f"trajectory_grading.{trajectory_judge_id}.json"
+            trajectory_path = (
+                Path(args.trajectory_grading_file)
+                if args.trajectory_grading_file else
+                d / f"trajectory_grading.{trajectory_judge_id}.json"
+            )
             if trajectory_path.exists():
                 trajectory_report = json.loads(trajectory_path.read_text(encoding="utf-8"))
                 layers["trajectory"]["judge"] = trajectory_report.get("judge")
@@ -408,7 +433,8 @@ def main() -> None:
         for m in na
     ]
 
-    (d / "scores.json").write_text(json.dumps({
+    scores_output.parent.mkdir(parents=True, exist_ok=True)
+    scores_output.write_text(json.dumps({
         "run_dir": d.name,
         "suite_id": suite.get("suite_id"),
         "run_mode": "synthetic_mock" if is_mock else "real",

@@ -29,10 +29,11 @@ from workflows import metrics
 from contracts import load_cases
 from evaluators import EvaluationContext, evaluate_all
 from evaluators.trajectory import merge_trajectory_metrics, write_trajectory_projection
-from workflows.grade import load_grading
+from workflows.grade import load_grading, resolve_run_dataset
 from workflows.score_routing import check_gate, describe_dimension, latest_run_dir, warn_uncalibrated
 
 ROOT = Path(__file__).parent.parent
+SCORE_VERSION = "score-full-v1"
 
 # 不算在被测 skill 头上的失败：评测系统/网络/runtime 自己挂了（AGENTS.md ★★★ ⑥）。
 # 把它们留在分母里，就等于「我们的 CLI 崩了」→「这个 skill 不行」。
@@ -205,13 +206,30 @@ def main() -> None:
     ap.add_argument("--dir", help="run 目录，默认取 outputs/ 下最新的一个")
     ap.add_argument("--judge-id", help="并入哪个 judge 的 assertion 判定；"
                                        "默认取 suite 的 scoring.judge.id")
+    ap.add_argument("--grading-file", help="显式读取一份版本化 grading JSON")
+    ap.add_argument("--no-grading", action="store_true", help="不并入任何输出 Judge 结果")
+    ap.add_argument("--trajectory-grading-file", help="显式读取一份 trajectory grading JSON")
+    ap.add_argument("--no-trajectory-grading", action="store_true",
+                    help="不并入任何 trajectory Judge 结果")
+    ap.add_argument("--scores-output", help="默认 {dir}/scores.json")
+    ap.add_argument("--html", help="默认 {dir}/report.html")
+    ap.add_argument("--trajectory-output", help="默认 {dir}/trajectory.jsonl")
     args = ap.parse_args()
+    if args.no_grading and args.grading_file:
+        ap.error("--no-grading 与 --grading-file 不能同时使用")
+    if args.no_trajectory_grading and args.trajectory_grading_file:
+        ap.error("--no-trajectory-grading 与 --trajectory-grading-file 不能同时使用")
 
     d = Path(args.dir) if args.dir else latest_run_dir()
+    scores_output = Path(args.scores_output) if args.scores_output else d / "scores.json"
+    html_output = Path(args.html) if args.html else d / "report.html"
+    trajectory_output = (
+        Path(args.trajectory_output) if args.trajectory_output else d / "trajectory.jsonl"
+    )
     snap = yaml.safe_load((d / "config.snapshot.yaml").read_text(encoding="utf-8"))
     suite = snap.get("suite", {})
     catalog = set(snap.get("skill_catalog") or [])
-    cases = {c.id: c for c in load_cases(ROOT / suite["dataset"])}
+    cases = {c.id: c for c in load_cases(resolve_run_dataset(d, snap))}
 
     print(f"run dir: {d.name}")
     print(f"suite: {suite.get('suite_id')} v{suite.get('suite_version')} "
@@ -221,7 +239,7 @@ def main() -> None:
 
     runs = [json.loads(l) for l in
             (d / "runs.jsonl").read_text(encoding="utf-8").splitlines() if l.strip()]
-    write_trajectory_projection(d, runs)
+    write_trajectory_projection(d, runs, trajectory_output)
     rows = [score_run(r, cases[r["case_id"]], catalog) for r in runs]
     all_df = pd.DataFrame(rows)
     if all_df.empty:
@@ -249,7 +267,9 @@ def main() -> None:
     if df.empty:
         raise SystemExit("全部运行都是系统故障，没有可评的结果")
 
-    grading = load_grading(d, snap, args.judge_id)
+    grading = None if args.no_grading else load_grading(
+        d, snap, args.judge_id, args.grading_file
+    )
     judge = (grading or {}).get("judge")
     scores = aggregate(df, (grading or {}).get("pass_rate"))
     print("\n确定性维度（分母 = 非系统故障的运行）：")
@@ -282,10 +302,15 @@ def main() -> None:
     layers = evaluate_all(evaluator_names, layer_context)
     trajectory_cfg = (suite.get("scoring", {}).get("trajectory") or {})
     trajectory_judge = None
-    if trajectory_cfg.get("enabled") and "trajectory" in layers:
+    if (trajectory_cfg.get("enabled") and "trajectory" in layers
+            and not args.no_trajectory_grading):
         trajectory_judge_id = trajectory_cfg.get("judge_id") or (judge or {}).get("id")
         if trajectory_judge_id:
-            trajectory_path = d / f"trajectory_grading.{trajectory_judge_id}.json"
+            trajectory_path = (
+                Path(args.trajectory_grading_file)
+                if args.trajectory_grading_file else
+                d / f"trajectory_grading.{trajectory_judge_id}.json"
+            )
             if trajectory_path.exists():
                 trajectory_judge = json.loads(trajectory_path.read_text(encoding="utf-8"))
                 layers["trajectory"]["judge"] = trajectory_judge.get("judge")
@@ -492,8 +517,8 @@ def main() -> None:
         "gate_enforced": not is_mock,
         "gate_pass": passed,
     }
-    (d / "scores.json").write_text(json.dumps(out, ensure_ascii=False, indent=2),
-                                   encoding="utf-8")
+    scores_output.parent.mkdir(parents=True, exist_ok=True)
+    scores_output.write_text(json.dumps(out, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # 确定性维度是百分比，语义维度是 0–1 连续分 —— 两种含义不同，不能混在一张表里
     dim_html = "".join(
@@ -524,7 +549,8 @@ def main() -> None:
         f"<h3>{name.title()} 层</h3><pre>{json.dumps(layer.get('metrics', {}), ensure_ascii=False, indent=2)}</pre>"
         for name, layer in layers.items()
     )
-    (d / "report.html").write_text("\n".join([
+    html_output.parent.mkdir(parents=True, exist_ok=True)
+    html_output.write_text("\n".join([
         (
             "<div style='border:3px solid #b45309;padding:12px;background:#fff7ed'>"
             "<b>SYNTHETIC MOCK — PIPELINE SMOKE ONLY.</b> "

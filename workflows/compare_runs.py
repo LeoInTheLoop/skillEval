@@ -2,6 +2,7 @@
 
 用法：
   python -m workflows.compare_runs outputs/a outputs/b [outputs/c ...]
+  python -m workflows.compare_runs outputs/a/scores/rubric-v1.json outputs/a/scores/rubric-v2.json
   python -m workflows.compare_runs --glob 'outputs/ctxweave_*'
 
 按 AGENTS.md §22.1 的比较维度出表。**先查配置差异**：只有目标那一项不同才是有效对照，
@@ -45,14 +46,19 @@ def _compare_slug(columns) -> str:
     return slug[:120] if len(slug) > 120 else slug
 
 
-def load_run(d: Path) -> dict:
-    scores = json.loads((d / "scores.json").read_text(encoding="utf-8"))
+def load_run(path: Path) -> dict:
+    """读取普通 run 目录或 rescore 的版本化 scores JSON。"""
+    score_path = path if path.is_file() else path / "scores.json"
+    scores = json.loads(score_path.read_text(encoding="utf-8"))
+    rescore = scores.get("rescore") or {}
+    d = Path(rescore.get("source_run_dir") or path)
     snap_p = d / "config.snapshot.yaml"
     snap = yaml.safe_load(snap_p.read_text(encoding="utf-8")) if snap_p.exists() else {}
     suite = snap.get("suite", {})
     judge = scores.get("judge") or {}
     return {
-        "dir": d.name,
+        "dir": (d.name if score_path.name == "scores.json"
+                else f"{d.name}/{score_path.parent.name}/{score_path.name}"),
         "suite_id": suite.get("suite_id"),
         "model": scores.get("model"),
         "skillcfg": suite.get("skills", {}).get("cfg"),
@@ -74,6 +80,8 @@ def load_run(d: Path) -> dict:
         "trajectory_judge_prompt_hash": (
             scores.get("trajectory_judge") or {}
         ).get("system_prompt_hash"),
+        "grading_hash": rescore.get("grading_hash"),
+        "source_runs_sha256": rescore.get("source_runs_sha256"),
         "n_skills": len(snap.get("skill_catalog") or snap.get("skills") or {}),
         "gate_pass": scores.get("gate_pass"),
         "scores": scores.get("scores", {}),
@@ -93,7 +101,8 @@ _FIXED = ("model", "runtime", "repeats", "parallelism")
 # 其余确定性维度完全不受影响 —— 所以单独一类，不并进 _FIXED。
 # 把它报成全局污染会让人以为整张表都不能信，那种过度警告的下场是所有警告都被忽略。
 _JUDGE = ("judge", "judge_model", "judge_prompt_hash", "judge_dimensions",
-          "trajectory_judge", "trajectory_judge_model", "trajectory_judge_prompt_hash")
+          "trajectory_judge", "trajectory_judge_model", "trajectory_judge_prompt_hash",
+          "grading_hash")
 _LEGACY_DEFAULTS = {"repeats": 3, "parallelism": 1}
 
 
@@ -142,6 +151,12 @@ def efficiency_means(runs: list[dict]) -> dict[str, list[float | None]]:
     }
 
 
+def same_execution_facts(runs: list[dict]) -> bool:
+    """版本化 rescore 只有 source runs hash 全部相同才算「同一执行换尺子」。"""
+    hashes = [run.get("source_runs_sha256") for run in runs]
+    return bool(hashes and all(hashes) and len(set(hashes)) == 1)
+
+
 def _format_efficiency(metric: str, value: float | None) -> str:
     if value is None or pd.isna(value):
         return "N/A"
@@ -173,11 +188,12 @@ def main() -> None:
     args = ap.parse_args()
 
     paths = [Path(p) for p in (sorted(globlib.glob(args.glob)) if args.glob else args.dirs)]
-    paths = [p for p in paths if (p / "scores.json").exists()]
+    paths = [p for p in paths if p.is_file() or (p / "scores.json").exists()]
     if len(paths) < 2:
         raise SystemExit("至少要两个已评分的 run 目录（缺 scores.json 就先跑 score_routing.py）")
 
     runs = [load_run(p) for p in paths]
+    same_facts = same_execution_facts(runs)
 
     print("对比的 run：")
     for r in runs:
@@ -186,6 +202,8 @@ def main() -> None:
 
     axes, derived, polluted, judges = diff_configs(runs)
     print("\n配置差异：")
+    if same_facts:
+        print("  [同一执行] source_runs_sha256 完全相同；这里只是在比较量具，不是 skill delta")
     for d in axes:
         print(f"  [对比维度] {d}")
     for d in derived:
@@ -195,13 +213,20 @@ def main() -> None:
     for d in judges:
         print(f"  [⚠️ 尺子不同] {d}")
     if not (axes or derived or polluted or judges):
-        print("  （完全相同 —— 这几个 run 只差重复次数带来的随机性）")
+        print(
+            "  （同一执行 + 同一量具 —— 这是 deterministic 可复现性核对）"
+            if same_facts else
+            "  （完全相同 —— 这几个 run 只差重复运行带来的随机性）"
+        )
     if polluted:
         print("  ⚠️ 上述项本应钉死；它们变了，delta 就混了多个原因，无法归因到单一因素")
     if judges:
         print(f"  ⚠️ 这几个 run 的语义分不是同一把尺子判的 —— **只有 judge 打分的那几行**"
               f"跨 run 不可比（确定性维度是代码算的，不受影响）。"
               f"\n     要比那几行，先用同一个 --judge-id 把它们各自重判一遍。")
+    if same_facts and judges:
+        print("  ⚠️ 同一执行上的 grading_hash/ judge 差异表示换了尺子；"
+              "确定性分可直接核对，语义分只展示、不解释为 skill 变化。")
 
     # 指标表 + 相对第一个 run 的 delta（每列一个独立的 Δ 列，别共用列名互相覆盖）
     rows = {m: [r["scores"].get(m) for r in runs] for m in METRICS}
@@ -251,6 +276,7 @@ def main() -> None:
     judged_here = [m for m in _JUDGED if m in df.index]
     out.write_text(
         "<h2>Run 对比</h2><h3>配置差异</h3><ul>"
+        + ("<li><b>[同一执行] 仅比较量具，不是 skill delta</b></li>" if same_facts else "")
         + "".join(f"<li>[对比维度] {d}</li>" for d in axes)
         + "".join(f"<li>[随之联动] {d}</li>" for d in derived)
         + "".join(f"<li><b>[⚠️ 污染] {d}</b></li>" for d in polluted)

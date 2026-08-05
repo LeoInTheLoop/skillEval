@@ -22,6 +22,7 @@ DIMENSIONS = (
     "tool_selection", "argument_correctness", "order_correctness",
     "state_persistence", "verification_rate",
 )
+EVALUATOR_VERSION = "trajectory-v2"
 
 
 def merge_trajectory_metrics(
@@ -43,13 +44,18 @@ def merge_trajectory_metrics(
     }
 
 
-def write_trajectory_projection(run_dir: str | Path, runs: list[dict[str, Any]]) -> Path:
+def write_trajectory_projection(
+    run_dir: str | Path,
+    runs: list[dict[str, Any]],
+    output_path: str | Path | None = None,
+) -> Path:
     """把 runs.jsonl 中的 trajectory 投影成便于 Viewer/审计的独立文件。
 
     原始 runs.jsonl 仍是事实来源；这个文件只是稳定的 trajectory 视图，不回写
     或修改原始结果。
     """
-    path = Path(run_dir) / "trajectory.jsonl"
+    path = Path(output_path) if output_path is not None else Path(run_dir) / "trajectory.jsonl"
+    path.parent.mkdir(parents=True, exist_ok=True)
     lines = []
     for run in runs:
         lines.append(json.dumps({

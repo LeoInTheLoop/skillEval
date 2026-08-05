@@ -8,6 +8,8 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from workflows.run_routing import ROOT
 
 from .archive import (
@@ -21,6 +23,8 @@ from .archive import (
 from .initialize import build_init_plan, execute_init, render_init_plan
 from .plan import build_plan, render_plan
 from .plan import endpoint_health
+from .rescore import build_rescore_plan, execute_rescore, parse_stages as parse_rescore_stages
+from .rescore import render_rescore_plan
 
 
 def _run_command(command: list[str]) -> None:
@@ -100,6 +104,26 @@ def main() -> None:
              "runs before score regardless of the order written here",
     )
     run_parser.add_argument("--execution-id", help="archive ID; default is a fresh timestamp")
+
+    rescore_parser = sub.add_parser(
+        "rescore",
+        help="re-grade immutable historical runs without executing the Agent again",
+    )
+    rescore_parser.add_argument("--run-dir", required=True, help="immutable historical run directory")
+    rescore_parser.add_argument("--stages", default="score",
+                                help="comma-separated: grade,trajectory,score (default: score)")
+    rescore_parser.add_argument("--grading-id", help="versioned output id; default: fresh timestamp")
+    rescore_parser.add_argument("--judge-id")
+    rescore_parser.add_argument("--judge-model")
+    rescore_parser.add_argument("--judge-api-base-env")
+    rescore_parser.add_argument("--judge-api-key-env")
+    rescore_parser.add_argument("--judge-params-json", help="replace judge params with a JSON object")
+    rescore_parser.add_argument("--dimensions", nargs="+")
+    rescore_parser.add_argument("--confirm", action="store_true",
+                                help="write new versioned grading/scores/report files")
+    rescore_parser.add_argument("--confirm-egress", action="store_true",
+                                help="approve sending archived evidence to judge stages")
+    rescore_parser.add_argument("--json", action="store_true")
 
     archive_parser = sub.add_parser(
         "archive",
@@ -229,6 +253,49 @@ def main() -> None:
             f"workspace: restored={restored}, reused={reused}",
             flush=True,
         )
+        return
+
+    if args.command == "rescore":
+        load_dotenv(ROOT / ".env")
+        try:
+            stages = parse_rescore_stages(args.stages)
+            judge_params = json.loads(args.judge_params_json) if args.judge_params_json else None
+            if judge_params is not None and not isinstance(judge_params, dict):
+                raise ValueError("--judge-params-json 必须是 JSON object")
+            grading_id = args.grading_id or datetime.now().astimezone().strftime(
+                "%Y%m%dT%H%M%S%f%z"
+            )
+            plan = build_rescore_plan(
+                args.run_dir,
+                stages=stages,
+                grading_id=grading_id,
+                judge_id=args.judge_id,
+                judge_model=args.judge_model,
+                judge_api_base_env=args.judge_api_base_env,
+                judge_api_key_env=args.judge_api_key_env,
+                dimensions=args.dimensions,
+                judge_params=judge_params,
+            )
+        except (ValueError, json.JSONDecodeError) as error:
+            raise SystemExit(f"invalid rescore request: {error}") from error
+        print(
+            json.dumps(plan.as_dict(), indent=2, ensure_ascii=False)
+            if args.json else render_rescore_plan(plan),
+            flush=True,
+        )
+        if not args.confirm:
+            raise SystemExit(0 if plan.runnable else 1)
+        if not plan.runnable:
+            raise SystemExit("refusing to rescore: preflight is blocked")
+        if plan.egress_required and not args.confirm_egress:
+            raise SystemExit(
+                "refusing judge calls: review the rescore external-data manifest, "
+                "then add --confirm-egress"
+            )
+        outputs = execute_rescore(plan)
+        print("\nRESCORED", flush=True)
+        for name, path in outputs.items():
+            print(f"  {name}: {path}", flush=True)
         return
 
     if args.command == "plan":

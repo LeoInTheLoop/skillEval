@@ -84,6 +84,17 @@ Efficiency
   --confirm --confirm-egress
 ```
 
+对已有 run 换 trajectory rubric / Judge 时使用 `pipeline rescore`，不要重跑 Agent：
+
+```bash
+.venv/bin/python -m pipeline rescore \
+  --run-dir outputs/<group>/<execution-id> \
+  --grading-id trajectory-v2 \
+  --stages trajectory,score --confirm --confirm-egress
+```
+
+版本化产物与 hash 规则见 [RUNBOOK.md](RUNBOOK.md#42-重新评分不重新执行)。
+
 ## 证据粒度：哪些维度出数、哪些记 N/A
 
 `--json` 的 `meta` 只有聚合 `toolSummary`，但 OpenClaw 把逐次调用写在

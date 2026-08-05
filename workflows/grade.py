@@ -144,6 +144,12 @@ def _resolve(snapshot: dict, key: str) -> Path:
     return path if path.is_absolute() else ROOT / path
 
 
+def resolve_run_dataset(run_dir: Path, snapshot: dict) -> Path:
+    """优先读取 run 当时归档的 dataset，避免历史题被工作区新版本偷换。"""
+    archived = run_dir / "inputs" / "dataset.jsonl"
+    return archived if archived.is_file() else _resolve(snapshot, "dataset")
+
+
 def resolve_judge(snapshot: dict, args: argparse.Namespace) -> SuiteJudgeSpec:
     """suite 的 judge 配置 + CLI 覆盖。CLI 优先，方便同一批 run 换尺子重评。
 
@@ -446,7 +452,7 @@ def grade_run_dir(
     progress: Callable[[int, int, str, str, int, str | None], None] | None = None,
 ) -> GradingReport:
     snapshot = yaml.safe_load((run_dir / "config.snapshot.yaml").read_text(encoding="utf-8"))
-    cases = {c.id: c for c in load_cases(_resolve(snapshot, "dataset"))}
+    cases = {c.id: c for c in load_cases(resolve_run_dataset(run_dir, snapshot))}
     active_dims = dims.resolve(judge.dimensions)
 
     graded: list[RunGrading] = []
@@ -545,13 +551,24 @@ def grading_partial_path(run_dir: Path, judge_id: str) -> Path:
     return run_dir / f"grading.{judge_id}.partial.json"
 
 
-def load_grading(run_dir: Path, snapshot: dict, judge_id: str | None) -> dict | None:
+def load_grading(
+    run_dir: Path,
+    snapshot: dict,
+    judge_id: str | None,
+    grading_file: str | Path | None = None,
+) -> dict | None:
     """给两个 score_*.py 读判定产物用。判不了就返回 None（N/A），**绝不退化成 0**。
 
     judge_id 的解析顺序：CLI > suite 的 scoring.judge.id。
     目录里躺着多个 judge 的结果却没指定用哪个时**直接报错，不随手挑一个** ——
     否则「这批分是谁判的」就成了 glob 顺序的函数，正是 §5① 要防的事。
     """
+    if grading_file is not None:
+        path = Path(grading_file)
+        if not path.is_file():
+            raise SystemExit(f"指定的 grading 文件不存在：{path}")
+        return json.loads(path.read_text(encoding="utf-8"))
+
     scoring = (snapshot.get("suite", {}) or {}).get("scoring") or {}
     wanted = judge_id or (scoring.get("judge") or {}).get("id")
     available = sorted(p.name.split(".")[1] for p in run_dir.glob("grading.*.json"))
@@ -630,7 +647,7 @@ def main() -> None:
           f"base={judge.api_base_env} key={judge.api_key_env} params={judge.params}")
     print(f"维度:    {[d.id for d in active_dims] or '（未启用，只判 assertions）'}")
 
-    cases = {c.id: c for c in load_cases(_resolve(snapshot, "dataset"))}
+    cases = {c.id: c for c in load_cases(resolve_run_dataset(run_dir, snapshot))}
     n_assert_cases = sum(1 for c in cases.values() if c.expect_assertions)
     if not n_assert_cases and not active_dims:
         raise SystemExit(

@@ -7,6 +7,8 @@ from workflows import metrics
 
 from .base import EvaluationContext, register
 
+EVALUATOR_VERSION = "efficiency-v1"
+
 
 @register("efficiency")
 class EfficiencyEvaluator:

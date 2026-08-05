@@ -19,6 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from contracts import TRAJECTORY_DIMENSIONS, SuiteJudgeSpec, TrajectoryDimensionScore, load_cases
 from judges.llm import LLMJudge, call_litellm
+from workflows.grade import resolve_run_dataset
 
 ROOT = Path(__file__).parent.parent
 GRADER_VERSION = "trajectory-judge-v1"
@@ -42,11 +43,6 @@ def _sha(text: str) -> str:
 class _Batch(BaseModel):
     model_config = ConfigDict(extra="forbid")
     dimensions: list[TrajectoryDimensionScore] = Field(default_factory=list)
-
-
-def _resolve_dataset(snapshot: dict[str, Any]) -> Path:
-    path = Path(snapshot["suite"]["dataset"]).expanduser()
-    return path if path.is_absolute() else ROOT / path
 
 
 def _judge(snapshot: dict[str, Any]) -> SuiteJudgeSpec:
@@ -109,14 +105,19 @@ def grade_one(case, run: dict[str, Any], judge: SuiteJudgeSpec,
     }
 
 
-def grade_run_dir(run_dir: Path, *, completion: Callable[..., str] = call_litellm) -> dict[str, Any]:
+def grade_run_dir(
+    run_dir: Path,
+    *,
+    judge: SuiteJudgeSpec | None = None,
+    completion: Callable[..., str] = call_litellm,
+) -> dict[str, Any]:
     snapshot = yaml.safe_load((run_dir / "config.snapshot.yaml").read_text(encoding="utf-8"))
     trajectory = ((snapshot.get("suite", {}).get("scoring") or {}).get("trajectory") or {})
     if not trajectory.get("enabled"):
         raise ValueError("suite.scoring.trajectory.enabled=false")
-    judge = _judge(snapshot)
+    judge = judge or _judge(snapshot)
     dimensions = list(trajectory.get("dimensions") or TRAJECTORY_DIMENSIONS)
-    cases = {c.id: c for c in load_cases(_resolve_dataset(snapshot))}
+    cases = {c.id: c for c in load_cases(resolve_run_dataset(run_dir, snapshot))}
     graded: list[dict[str, Any]] = []
     failures: list[dict[str, Any]] = []
     for line in (run_dir / "runs.jsonl").read_text(encoding="utf-8").splitlines():

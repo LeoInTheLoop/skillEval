@@ -5,7 +5,7 @@
 """
 from __future__ import annotations
 
-from workflows.compare_runs import diff_configs, efficiency_means
+from workflows.compare_runs import diff_configs, efficiency_means, load_run, same_execution_facts
 
 
 def _run(**kw):
@@ -64,3 +64,31 @@ def test_效率维度取_mean_且缺失不伪造零():
     ])
     assert rows["time_seconds"] == [2.5, 3.0]
     assert rows["tokens"] == [120, None]
+
+
+def test_同一source_runs的不同grading_hash是换尺子不是skill_delta(tmp_path):
+    run_dir = tmp_path / "run"
+    scores_dir = run_dir / "scores"
+    scores_dir.mkdir(parents=True)
+    (run_dir / "config.snapshot.yaml").write_text(
+        "suite:\n  suite_id: demo\n  dataset: cases.jsonl\n  skills:\n    cfg: v1\n",
+        encoding="utf-8",
+    )
+    for name, grading_hash in (("r1", "sha256:g1"), ("r2", "sha256:g2")):
+        (scores_dir / f"{name}.json").write_text(__import__("json").dumps({
+            "model": "m",
+            "config_hash": "sha256:c",
+            "scores": {"task_completion": 1.0, "faithfulness": 0.5},
+            "judge": {"id": name, "model": "judge"},
+            "rescore": {
+                "source_run_dir": str(run_dir),
+                "source_runs_sha256": "sha256:same",
+                "grading_hash": grading_hash,
+            },
+        }), encoding="utf-8")
+
+    runs = [load_run(scores_dir / "r1.json"), load_run(scores_dir / "r2.json")]
+    assert same_execution_facts(runs)
+    _, _, polluted, judges = diff_configs(runs)
+    assert not polluted
+    assert any("grading_hash" in item for item in judges)

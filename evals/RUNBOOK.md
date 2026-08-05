@@ -498,6 +498,58 @@ outputs/<...>/<execution_id>/improvements/round-01/suggestions.json
 预算、`max_iterations` 不允许中途修改；触发 gate PASS、任一预算上限或最大轮数后，
 报告会记录原因且不再调用模型。
 
+### 4.2 重新评分，不重新执行
+
+改 rubric、换 Judge 或只想用新版 deterministic evaluator 重算时，不要重新运行 Agent：
+
+```bash
+# 默认只展示只读计划；不调用 runtime、模型，也不写文件
+.venv/bin/python -m pipeline rescore \
+  --run-dir outputs/<group>/<execution-id> \
+  --grading-id rubric-v2 \
+  --stages score
+
+# 确认后只做确定性重算，仍然不会调用 Agent 或 Judge
+.venv/bin/python -m pipeline rescore \
+  --run-dir outputs/<group>/<execution-id> \
+  --grading-id rubric-v2 \
+  --stages score --confirm
+
+# 需要重新跑输出 Judge / trajectory Judge 时显式声明并单独批准外发
+.venv/bin/python -m pipeline rescore \
+  --run-dir outputs/<group>/<execution-id> \
+  --grading-id judge-v2 \
+  --stages grade,trajectory,score \
+  --judge-id judge-v2 --judge-model openai/<judge-model> \
+  --confirm --confirm-egress
+```
+
+rescore 禁止调用 runtime，也禁止写 `runs.jsonl`。执行前后都会核对原始 runs、snapshot 和
+归档 dataset 的 SHA-256；题目优先读取 `inputs/dataset.jsonl`，不会被工作区后来修改的
+同名题库偷换。新产物永不覆盖旧结果：
+
+```text
+grading/<judge-id>/<grading-id>.json
+grading/<judge-id>/<grading-id>.trajectory.json
+scores/<grading-id>.json
+scores/<grading-id>.trajectory.jsonl
+reports/<grading-id>.html
+```
+
+每份 JSON 都记录 `source_runs_sha256`、dataset/snapshot hash、Judge 模型与参数、rubric /
+evaluator 版本和 `grading_hash`。同一 source runs、同一量具的 deterministic 分应完全一致。
+比较两把量具可直接把版本化 scores 文件交给 compare：
+
+```bash
+.venv/bin/python -m workflows.compare_runs \
+  outputs/<run>/scores/rubric-v1.json \
+  outputs/<run>/scores/rubric-v2.json
+```
+
+比较器会标记“同一执行，只是换尺子”：确定性分可比，Judge/rubric 不同的语义分不可解释为
+skill delta。二进制产物若历史 run 没保存可读内容，重评仍为证据不足/N/A；rescore 不会为了
+补证据偷偷重跑 Agent。
+
 ---
 
 ## 5. 现在支持到哪、还差什么

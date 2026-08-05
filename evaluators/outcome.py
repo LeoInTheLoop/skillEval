@@ -6,6 +6,8 @@ from typing import Any
 
 from .base import EvaluationContext, register
 
+EVALUATOR_VERSION = "outcome-v1"
+
 
 def _mean(values: list[float]) -> float | None:
     return round(fmean(values), 4) if values else None

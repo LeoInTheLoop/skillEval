@@ -7,6 +7,8 @@ from workflows import metrics
 
 from .base import EvaluationContext, register
 
+EVALUATOR_VERSION = "reliability-v1"
+
 
 @register("reliability")
 class ReliabilityEvaluator:
