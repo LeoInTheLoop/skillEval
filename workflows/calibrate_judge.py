@@ -196,6 +196,10 @@ def main() -> None:
     ):
         if not 0 <= value <= 1:
             parser.error(f"{name} 必须在 0 与 1 之间")
+    if args.agreement_threshold < 0.80:
+        parser.error("--agreement-threshold 不得低于 registry policy 0.80")
+    if args.invalid_threshold > 0.02:
+        parser.error("--invalid-threshold 不得高于 registry policy 0.02")
 
     output = Path(args.output)
     if output.exists() and not args.force:

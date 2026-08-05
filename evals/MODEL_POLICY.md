@@ -65,10 +65,19 @@ scoring:
 
 Standard semantic dimensions still have no human calibration entries. Putting
 one in a gate therefore produces `judge-uncalibrated` and an indeterminate gate,
-not PASS/FAIL. Generate a new report and registry with:
+not PASS/FAIL. Do **not** reuse assertion gold or model-generated labels for a
+dimension. After a human has scored at least 10 applicable runs for each target
+dimension, generate a dimension report and a separate registry with:
 
 ```bash
-.venv/bin/python -m workflows.calibrate_judge \
-  --gold <human-gold.json> --grading <grading.json> \
+.venv/bin/python -m workflows.calibrate_dimensions \
+  --gold <human-dimension-gold.json> --grading <grading.json> \
   --output <calibration.results.json> --registry-output <registry.json>
 ```
+
+The default agreement rule is explicit: absolute score error ≤ 0.25 on the
+0–1 scale, with ≥80% agreement, ≤2% invalid judge calls, and at least 10 human
+annotations per dimension. The report also records MAE. A/B swap is `N/A`
+because these are absolute scores, not pairwise rankings. The human gold pins
+`dimension_versions`; a grading file produced with another rubric version is
+rejected rather than compared.

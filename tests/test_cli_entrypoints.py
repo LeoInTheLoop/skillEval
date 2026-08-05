@@ -27,6 +27,7 @@ MODULES = [
     "workflows.import_skill",
     "workflows.suggest",
     "workflows.calibrate_judge",
+    "workflows.calibrate_dimensions",
 ]
 
 

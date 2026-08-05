@@ -20,6 +20,10 @@ _TRAJECTORY_METRICS = {
     "tool_selection", "argument_correctness", "order_correctness",
     "state_persistence", "verification_rate",
 }
+_AGREEMENT_MIN = 0.80
+_INVALID_MAX = 0.02
+_DIMENSION_TOLERANCE_MAX = 0.25
+_DIMENSION_ANNOTATIONS_MIN = 10
 
 
 def sha256_file(path: Path) -> str:
@@ -44,7 +48,10 @@ class CalibrationEntry(BaseModel):
     scope: Scope
     dimension: str | None = None
     judge: JudgeFingerprint
+    # 对 bool assertion 是 accuracy；对 0-1 dimension 是容差内一致率。
     agreement: float = Field(ge=0, le=1)
+    agreement_tolerance: float | None = Field(default=None, ge=0, le=1)
+    mean_absolute_error: float | None = Field(default=None, ge=0, le=1)
     invalid_output_rate: float = Field(ge=0, le=1)
     qualified: bool
     evidence_report: str = Field(min_length=1)
@@ -63,6 +70,12 @@ class CalibrationEntry(BaseModel):
             raise ValueError(f"未知 standard dimension：{self.dimension}")
         if self.scope == "trajectory_dimension" and self.dimension not in _TRAJECTORY_METRICS:
             raise ValueError(f"未知 trajectory dimension：{self.dimension}")
+        if self.scope == "absolute_assertions" and (
+            self.agreement_tolerance is not None or self.mean_absolute_error is not None
+        ):
+            raise ValueError("absolute_assertions calibration 不使用连续分误差字段")
+        if self.scope == "standard_dimension" and self.agreement_tolerance is None:
+            raise ValueError("standard_dimension calibration 必须声明 agreement_tolerance")
         return self
 
 
@@ -120,7 +133,11 @@ def load_registry(path: str | Path) -> tuple[CalibrationRegistry, Path, str]:
         for item in report.get("calibrations") or []:
             item_fingerprint = _fingerprint(item.get("judge"))
             if (item_fingerprint == entry.judge
-                    and (item.get("judge") or {}).get("id") == entry.evidence_judge_id):
+                    and (item.get("judge") or {}).get("id") == entry.evidence_judge_id
+                    and (
+                        entry.scope == "absolute_assertions"
+                        or item.get("dimension") == entry.dimension
+                    )):
                 evidence_matches.append(item)
         if len(evidence_matches) != 1:
             raise ValueError(
@@ -128,27 +145,80 @@ def load_registry(path: str | Path) -> tuple[CalibrationRegistry, Path, str]:
                 f"entry={entry.entry_id} matches={len(evidence_matches)}"
             )
         evidence_item = evidence_matches[0]
+        absolute = entry.scope == "absolute_assertions"
+        _validate_qualification_policy(report, evidence_item, scope=entry.scope)
         evidence_qualified = bool(
             evidence_item.get("qualified_for_absolute_assertions")
-            if entry.scope == "absolute_assertions" else
-            evidence_item.get("qualified")
+            if absolute else evidence_item.get("qualified")
+        )
+        evidence_agreement = (
+            evidence_item.get("judge_vs_human_agreement")
+            if absolute else evidence_item.get("within_tolerance_agreement")
         )
         if (
             evidence_qualified != entry.qualified
-            or float(evidence_item.get("judge_vs_human_agreement", -1)) != entry.agreement
+            or float(evidence_agreement if evidence_agreement is not None else -1)
+            != entry.agreement
             or float(evidence_item.get("invalid_judge_output_rate", -1))
             != entry.invalid_output_rate
+            or (
+                not absolute
+                and float(evidence_item.get("agreement_tolerance", -1))
+                != entry.agreement_tolerance
+            )
+            or (
+                not absolute
+                and evidence_item.get("mean_absolute_error")
+                != entry.mean_absolute_error
+            )
         ):
             raise ValueError(f"calibration registry 与 evidence 指标不一致：{entry.entry_id}")
     return registry, registry_path, sha256_file(registry_path)
 
 
+def _validate_qualification_policy(
+    report: dict[str, Any], item: dict[str, Any], *, scope: Scope
+) -> None:
+    """Registry has hard floors; a report cannot self-authorize with lax flags."""
+    qualified = bool(
+        item.get("qualified_for_absolute_assertions")
+        if scope == "absolute_assertions" else item.get("qualified")
+    )
+    if not qualified:
+        return
+    thresholds = report.get("thresholds") or {}
+    agreement_key = (
+        "judge_vs_human_agreement_min"
+        if scope == "absolute_assertions" else "within_tolerance_agreement_min"
+    )
+    agreement_threshold = float(thresholds.get(agreement_key, -1))
+    invalid_threshold = float(thresholds.get("invalid_judge_output_rate_max", 2))
+    if agreement_threshold < _AGREEMENT_MIN or invalid_threshold > _INVALID_MAX:
+        raise ValueError(
+            "calibration report 使用了低于 registry policy 的门槛："
+            f"agreement_min={agreement_threshold}, invalid_max={invalid_threshold}"
+        )
+    if scope == "standard_dimension":
+        tolerance = float(thresholds.get("absolute_score_error_tolerance", 2))
+        minimum = int(thresholds.get("n_annotations_min", 0))
+        if tolerance > _DIMENSION_TOLERANCE_MAX or minimum < _DIMENSION_ANNOTATIONS_MIN:
+            raise ValueError(
+                "standard dimension calibration 使用了过松 policy："
+                f"tolerance={tolerance}, n_annotations_min={minimum}"
+            )
+        if int(item.get("n_annotations", 0)) < _DIMENSION_ANNOTATIONS_MIN:
+            raise ValueError("standard dimension calibration 人工标注少于 10 条")
+
+
 def registry_from_report(path: str | Path) -> CalibrationRegistry:
-    """把 absolute-assertion calibration report 转成可审计 registry。"""
+    """把 assertion 或 standard-dimension report 转成可审计 registry。"""
     report_path = _resolve(path)
     payload = json.loads(report_path.read_text(encoding="utf-8"))
     report_hash = sha256_file(report_path)
     by_gauge: dict[str, CalibrationEntry] = {}
+    report_kind = payload.get("calibration_kind", "absolute_assertions")
+    if report_kind not in {"absolute_assertions", "standard_dimensions"}:
+        raise ValueError(f"未知 calibration_kind：{report_kind}")
     for item in payload.get("calibrations") or []:
         fingerprint = _fingerprint(item.get("judge"))
         if fingerprint is None:
@@ -156,20 +226,43 @@ def registry_from_report(path: str | Path) -> CalibrationRegistry:
         judge_id = (item.get("judge") or {}).get("id")
         if not judge_id:
             raise ValueError("calibration report 的 judge.id 为空，无法定位 evidence")
+        standard = report_kind == "standard_dimensions"
+        dimension = item.get("dimension") if standard else None
+        if standard and not dimension:
+            raise ValueError("standard dimension calibration 缺 dimension")
+        _validate_qualification_policy(
+            payload,
+            item,
+            scope="standard_dimension" if standard else "absolute_assertions",
+        )
         entry = CalibrationEntry(
-            entry_id=f"{payload['calibration_id']}--{judge_id}",
+            entry_id=(
+                f"{payload['calibration_id']}--{judge_id}--{dimension}"
+                if standard else f"{payload['calibration_id']}--{judge_id}"
+            ),
             calibration_id=payload["calibration_id"],
-            scope="absolute_assertions",
-            dimension=None,
+            scope="standard_dimension" if standard else "absolute_assertions",
+            dimension=dimension,
             judge=fingerprint,
-            agreement=item["judge_vs_human_agreement"],
+            agreement=(
+                item["within_tolerance_agreement"]
+                if standard else item["judge_vs_human_agreement"]
+            ),
+            agreement_tolerance=item.get("agreement_tolerance") if standard else None,
+            mean_absolute_error=item.get("mean_absolute_error") if standard else None,
             invalid_output_rate=item["invalid_judge_output_rate"],
-            qualified=bool(item["qualified_for_absolute_assertions"]),
+            qualified=bool(
+                item["qualified"] if standard
+                else item["qualified_for_absolute_assertions"]
+            ),
             evidence_report=str(report_path),
             evidence_report_sha256=report_hash,
             evidence_judge_id=judge_id,
         )
-        key = json.dumps(fingerprint.model_dump(mode="json"), sort_keys=True)
+        key = json.dumps({
+            "fingerprint": fingerprint.model_dump(mode="json"),
+            "dimension": dimension,
+        }, sort_keys=True)
         previous = by_gauge.get(key)
         if previous is None or (entry.agreement, -entry.invalid_output_rate) > (
             previous.agreement, -previous.invalid_output_rate

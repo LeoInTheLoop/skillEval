@@ -225,6 +225,30 @@ scoring:
 模型/参数/prompt/rubric 任一不匹配都会标 `judge-uncalibrated`，整体 gate 为
 indeterminate，不会误报 PASS/FAIL。
 
+要让某个维度取得 gate qualification，先由人工按同一版 rubric 标至少 10 个适用 run。
+gold 的定位键包含 `case_id / repeat_index / turn_index / dimension`，并显式固定 rubric 版本：
+
+```json
+{
+  "schema_version": "1.0",
+  "calibration_id": "my-skill-dimensions-v1",
+  "source_run": "outputs/...",
+  "annotated_by": "reviewer-name",
+  "annotated_at": "2026-08-05",
+  "dimension_versions": {"faithfulness": "v1"},
+  "annotations": [
+    {"case_id": "case-01", "repeat_index": 0, "turn_index": 1,
+     "dimension": "faithfulness", "score": 0.5,
+     "rationale": "输入没有支持输出中的具体日期"}
+  ]
+}
+```
+
+然后运行 `python -m workflows.calibrate_dimensions --gold ... --grading ... --output ...`。
+默认把绝对误差 ≤0.25 计为一致，同时报告 MAE；agreement、invalid rate、最小样本量和
+容差都写入证据报告。gold 覆盖不完整、定位键重复、rubric version 不同都会在登记前拒绝。
+这里的 `annotated_by` 必须是真实人工审核者；模型生成的分数不能冒充 human gold。
+
 ### 2.4 Full eval 多轮题
 
 顶层字段永远是第 1 轮；`turns` 只写后续轮次。后续轮不要重复粘贴历史，模型应通过

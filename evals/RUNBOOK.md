@@ -436,6 +436,14 @@ profile 配置而把 agent 调用串行化；Docker backend 每 conversation 一
 #     grade.py 会在外发之前就报错**，并列出当前已配好的 key 变量供你改指向。
 #     共用端点没关系，共用同一个 model 才有关系（考生不能改自己的卷子）。
 
+# 2d. 标准维度进 gate 前，离线对齐人工连续分（此命令不调用模型）
+.venv/bin/python -m workflows.calibrate_dimensions \
+    --gold evals/calibration/<human-dimension-gold>.json \
+    --grading outputs/xxx/grading.<judge-id>.json \
+    --output evals/calibration/<dimension-calibration>.results.json \
+    --registry-output evals/calibration/<dimension-registry>.json
+# 不要用模型生成 gold；默认每个维度至少 10 条人工标注。
+
 # 3. 比两次（对齐 config_hash 后看 delta）
 .venv/bin/python -c "
 import json

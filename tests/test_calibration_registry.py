@@ -121,3 +121,28 @@ def test_registry_rejects_tampered_evidence_report(tmp_path):
     }), encoding="utf-8")
     with pytest.raises(ValueError, match="hash 不匹配"):
         load_registry(registry)
+
+
+def test_registry_rejects_absolute_report_with_lax_self_declared_thresholds(tmp_path):
+    from workflows.calibration_registry import registry_from_report
+
+    evidence = tmp_path / "lax-absolute.json"
+    evidence.write_text(json.dumps({
+        "calibration_id": "lax",
+        "thresholds": {
+            "judge_vs_human_agreement_min": 0.0,
+            "invalid_judge_output_rate_max": 1.0,
+        },
+        "calibrations": [{
+            "judge": {
+                "id": "j", "model": "m", "api_base_env": "BASE", "params": {},
+                "system_prompt_hash": "sha256:p", "dimensions": {},
+            },
+            "judge_vs_human_agreement": 0.0,
+            "invalid_judge_output_rate": 0.5,
+            "qualified_for_absolute_assertions": True,
+        }],
+    }), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="低于 registry policy"):
+        registry_from_report(evidence)
