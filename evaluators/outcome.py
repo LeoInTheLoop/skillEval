@@ -13,7 +13,7 @@ def _mean(values: list[float]) -> float | None:
     return round(fmean(values), 4) if values else None
 
 
-@register("outcome")
+@register("outcome", version=EVALUATOR_VERSION)
 class OutcomeEvaluator:
     def evaluate(self, context: EvaluationContext) -> dict[str, Any]:
         scores = context.scores

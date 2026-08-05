@@ -81,6 +81,9 @@ def load_run(path: Path) -> dict:
             scores.get("trajectory_judge") or {}
         ).get("system_prompt_hash"),
         "grading_hash": rescore.get("grading_hash"),
+        "evaluator_manifest": json.dumps(
+            scores.get("evaluator_manifest") or {}, sort_keys=True
+        ),
         "source_runs_sha256": rescore.get("source_runs_sha256"),
         "n_skills": len(snap.get("skill_catalog") or snap.get("skills") or {}),
         "gate_pass": scores.get("gate_pass"),
@@ -102,7 +105,7 @@ _FIXED = ("model", "runtime", "repeats", "parallelism")
 # 把它报成全局污染会让人以为整张表都不能信，那种过度警告的下场是所有警告都被忽略。
 _JUDGE = ("judge", "judge_model", "judge_prompt_hash", "judge_dimensions",
           "trajectory_judge", "trajectory_judge_model", "trajectory_judge_prompt_hash",
-          "grading_hash")
+          "grading_hash", "evaluator_manifest")
 _LEGACY_DEFAULTS = {"repeats": 3, "parallelism": 1}
 
 

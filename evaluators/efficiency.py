@@ -10,7 +10,7 @@ from .base import EvaluationContext, register
 EVALUATOR_VERSION = "efficiency-v1"
 
 
-@register("efficiency")
+@register("efficiency", version=EVALUATOR_VERSION, expose_scalar_metrics=False)
 class EfficiencyEvaluator:
     def evaluate(self, context: EvaluationContext) -> dict[str, Any]:
         return {"metrics": metrics.efficiency(context.runs)}

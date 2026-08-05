@@ -444,6 +444,10 @@ profile 配置而把 agent 调用串行化；Docker backend 每 conversation 一
     --registry-output evals/calibration/<dimension-registry>.json
 # 不要用模型生成 gold；默认每个维度至少 10 条人工标注。
 
+# 2e. 组合或加载自定义确定性 evaluator
+# 见 evals/EVALUATORS.md；suite 用 module.path:registered-name 引用，参数写 evaluator_options。
+# 标量 metrics 自动进入 scores/gate；量具 version + 源码 SHA + options 会写入评分产物。
+
 # 3. 比两次（对齐 config_hash 后看 delta）
 .venv/bin/python -c "
 import json

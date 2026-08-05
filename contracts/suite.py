@@ -225,6 +225,9 @@ class SuiteScoringSpec(_StrictModel):
     evaluators: list[str] = Field(
         default_factory=lambda: ["outcome", "trajectory", "reliability", "efficiency"]
     )
+    # key 必须与 evaluators 中的引用完全一致；值传给 evaluator 构造器。
+    # 外部实现用 ``python.module:registered-name`` 引用，代码版本由评分产物 fingerprint。
+    evaluator_options: dict[str, dict[str, Any]] = Field(default_factory=dict)
     gate: dict[str, str] = Field(default_factory=dict)
     # 只有 registry 中与 judge/rubric fingerprint 精确匹配且 qualified 的语义量具
     # 才能进入发布 gate。路径本身随 suite 进入 snapshot/config hash。
@@ -266,12 +269,16 @@ class SuiteScoringSpec(_StrictModel):
                 "argument_correctness 的 deterministic rubric 尚未登记人工校准，"
                 "当前只能出数、不能进入 gate"
             )
-        from evaluators import available
-        unknown_evaluators = sorted(set(self.evaluators) - set(available()))
-        if unknown_evaluators:
+        unknown_options = sorted(set(self.evaluator_options) - set(self.evaluators))
+        if unknown_options:
             raise ValueError(
-                f"未知 evaluator {unknown_evaluators}；可用：{available()}"
+                f"evaluator_options 含未启用的 evaluator：{unknown_options}"
             )
+        from evaluators import evaluator_manifest
+        try:
+            evaluator_manifest(self.evaluators, self.evaluator_options)
+        except Exception as error:
+            raise ValueError(f"evaluator 配置无效：{error}") from error
         return self
 
 

@@ -32,7 +32,12 @@ from workflows.calibration_registry import (
     deterministic_trajectory_metrics,
 )
 from contracts import load_cases
-from evaluators import EvaluationContext, evaluate_all
+from evaluators import (
+    EvaluationContext,
+    evaluate_all,
+    evaluator_manifest,
+    scalar_metrics,
+)
 from evaluators.trajectory import merge_trajectory_metrics, write_trajectory_projection
 from workflows.grade import load_grading, resolve_run_dataset
 from workflows.score_routing import check_gate, describe_dimension, latest_run_dir
@@ -304,7 +309,9 @@ def main() -> None:
     )
     evaluator_names = (suite.get("scoring", {}).get("evaluators")
                        or ["outcome", "trajectory", "reliability", "efficiency"])
-    layers = evaluate_all(evaluator_names, layer_context)
+    evaluator_options = suite.get("scoring", {}).get("evaluator_options") or {}
+    layers = evaluate_all(evaluator_names, layer_context, evaluator_options)
+    evaluator_gauges = evaluator_manifest(evaluator_names, evaluator_options)
     trajectory_cfg = (suite.get("scoring", {}).get("trajectory") or {})
     trajectory_judge = None
     if (trajectory_cfg.get("enabled") and "trajectory" in layers
@@ -330,9 +337,9 @@ def main() -> None:
                 layers["trajectory"]["judge_failures"] = len(
                     trajectory_judge.get("judge_failures") or []
                 )
-    for layer in ("outcome", "trajectory"):
-        if layer in layers:
-            scores.update(layers[layer].get("metrics") or {})
+    # 任何注册 evaluator 都能提供 scalar metric 进入 scores/gate；dict/list 只展示。
+    # 同名不同值直接拒绝，防止 evaluator 顺序决定 gate 结果。
+    scores.update(scalar_metrics(layers, evaluator_names))
     print("\n四层评估视图：")
     for layer_name, layer in layers.items():
         print(f"  {layer_name}: {layer.get('metrics', {})}")
@@ -512,6 +519,7 @@ def main() -> None:
         "system_failures_by_kind": sysfail.error_kind.value_counts().to_dict(),
         "scores": scores,
         "evaluation": layers,
+        "evaluator_manifest": evaluator_gauges,
         # 这批分是谁判的。没有它，两个 run 的 assertion_pass_rate 就没法判断可不可比。
         "judge": judge,
         "trajectory_judge": layers.get("trajectory", {}).get("judge"),

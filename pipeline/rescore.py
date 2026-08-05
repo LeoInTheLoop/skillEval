@@ -21,10 +21,7 @@ from typing import Any, Callable
 import yaml
 
 from contracts import SuiteJudgeSpec
-from evaluators.efficiency import EVALUATOR_VERSION as EFFICIENCY_VERSION
-from evaluators.outcome import EVALUATOR_VERSION as OUTCOME_VERSION
-from evaluators.reliability import EVALUATOR_VERSION as RELIABILITY_VERSION
-from evaluators.trajectory import EVALUATOR_VERSION as TRAJECTORY_VERSION
+from evaluators import evaluator_manifest
 from workflows import dimensions as dims
 from workflows.calibration_registry import load_registry
 from workflows.grade import (
@@ -45,12 +42,7 @@ from workflows.score_routing import SCORE_VERSION as ROUTING_SCORE_VERSION
 RESCORE_VERSION = "rescore-v1"
 STAGE_ORDER = ("grade", "trajectory", "score")
 _SAFE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
-_EVALUATOR_VERSIONS = {
-    "outcome": OUTCOME_VERSION,
-    "trajectory": TRAJECTORY_VERSION,
-    "reliability": RELIABILITY_VERSION,
-    "efficiency": EFFICIENCY_VERSION,
-}
+_DEFAULT_EVALUATORS = ["outcome", "trajectory", "reliability", "efficiency"]
 ROOT = Path(__file__).parent.parent
 
 
@@ -265,10 +257,13 @@ def build_rescore_plan(
             }
         except (OSError, ValueError) as error:
             blocked.append(f"calibration registry 无效：{error}")
-    evaluator_names = scoring.get("evaluators") or list(_EVALUATOR_VERSIONS)
-    evaluator_versions = {
-        name: _EVALUATOR_VERSIONS.get(name, "unversioned") for name in evaluator_names
-    }
+    evaluator_names = scoring.get("evaluators") or _DEFAULT_EVALUATORS
+    evaluator_options = scoring.get("evaluator_options") or {}
+    try:
+        evaluator_gauges = evaluator_manifest(evaluator_names, evaluator_options)
+    except Exception as error:
+        blocked.append(f"evaluator 配置无效：{error}")
+        evaluator_gauges = {}
     gauge = {
         "rescore_version": RESCORE_VERSION,
         "stages": list(stages),
@@ -286,7 +281,7 @@ def build_rescore_plan(
         "score_version": (
             FULL_SCORE_VERSION if skill_mode == "full" else ROUTING_SCORE_VERSION
         ) if "score" in stages else None,
-        "evaluators": evaluator_versions,
+        "evaluators": evaluator_gauges,
         "gate": scoring.get("gate") or {},
         "calibration_registry": calibration_registry,
     }

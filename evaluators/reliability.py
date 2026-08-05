@@ -10,7 +10,7 @@ from .base import EvaluationContext, register
 EVALUATOR_VERSION = "reliability-v1"
 
 
-@register("reliability")
+@register("reliability", version=EVALUATOR_VERSION, expose_scalar_metrics=False)
 class ReliabilityEvaluator:
     def evaluate(self, context: EvaluationContext) -> dict[str, Any]:
         rows = context.rows

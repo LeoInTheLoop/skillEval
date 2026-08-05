@@ -331,7 +331,7 @@ def score_structured(run: dict[str, Any], expectation: dict[str, Any] | None) ->
     return out
 
 
-@register("trajectory")
+@register("trajectory", version=EVALUATOR_VERSION)
 class TrajectoryEvaluator:
     def evaluate(self, context: EvaluationContext) -> dict[str, Any]:
         cases = context.cases
