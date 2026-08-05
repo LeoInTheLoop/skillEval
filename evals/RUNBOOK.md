@@ -453,6 +453,7 @@ profile 配置而把 agent 调用串行化；Docker backend 每 conversation 一
 #     pipeline plan 会比较 suite 里的执行模型/runtime_options.model；grade 还会读取
 #     RunResult.resolved_model。发现与 judge.model 相同会显式标 self-judging，语义分只可诊断，
 #     不应用于改进或发布决策。字符串不同但实际指向同一 provider alias 时仍需人工确认。
+#     `--judge-model` 覆盖 suite 时，比较使用覆盖后的实际 Judge，不使用 snapshot 里的旧值。
 
 # 2d. 标准维度进 gate 前，离线对齐人工连续分（此命令不调用模型）
 .venv/bin/python -m workflows.calibrate_dimensions \

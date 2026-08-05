@@ -124,8 +124,8 @@ def test_grade直接入口也会用run的resolved_model识别自己评自己(
         "models": [{"id": "runtime-managed", "model": None}],
         "runtime_options": {},
         "scoring": {"judge": {
-            "id": "same",
-            "model": tested,
+            "id": "old-independent",
+            "model": "openai/old-independent",
             "api_base_env": "JUDGE_BASE",
             "api_key_env": "JUDGE_KEY",
             "params": {},
@@ -137,7 +137,10 @@ def test_grade直接入口也会用run的resolved_model识别自己评自己(
     )
     monkeypatch.setenv("JUDGE_BASE", "https://judge.example.test/v1")
     monkeypatch.setenv("JUDGE_KEY", "test-key")
-    monkeypatch.setattr("sys.argv", ["grade", "--dir", str(d), "--dry-run"])
+    monkeypatch.setattr("sys.argv", [
+        "grade", "--dir", str(d), "--judge-id", "selfcheck",
+        "--judge-model", tested, "--dry-run",
+    ])
 
     grade.main()
 

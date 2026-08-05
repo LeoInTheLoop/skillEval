@@ -649,7 +649,9 @@ def main() -> None:
             run = RunResult.model_validate_json(line)
             observed_models.extend([run.resolved_model or "", run.model or ""])
     for warning in self_judge_warnings(
-        snapshot.get("suite") or {}, observed_models=observed_models
+        snapshot.get("suite") or {},
+        observed_models=observed_models,
+        judge_model=judge.model,
     ):
         print(f"⚠️ {warning}")
     require_judge_credentials(judge)

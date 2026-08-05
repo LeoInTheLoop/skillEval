@@ -14,12 +14,15 @@ from contracts import RoutingCase
 
 
 def self_judge_warnings(
-    suite: dict[str, Any], *, observed_models: Iterable[str] = ()
+    suite: dict[str, Any],
+    *,
+    observed_models: Iterable[str] = (),
+    judge_model: str | None = None,
 ) -> list[str]:
     """Warn when the candidate model is also configured as its own judge."""
     judge = ((suite.get("scoring") or {}).get("judge") or {})
-    judge_model = judge.get("model")
-    if not judge_model:
+    actual_judge_model = judge_model or judge.get("model")
+    if not actual_judge_model:
         return []
     execution_models = {
         model.get("model")
@@ -30,10 +33,10 @@ def self_judge_warnings(
     if runtime_model:
         execution_models.add(runtime_model)
     execution_models.update(model for model in observed_models if model)
-    if judge_model not in execution_models:
+    if actual_judge_model not in execution_models:
         return []
     return [
-        f"execution model and judge model are both `{judge_model}`; this is self-judging. "
+        f"execution model and judge model are both `{actual_judge_model}`; this is self-judging. "
         "Keep its semantic scores diagnostic-only, or configure an independent judge before "
         "using them for improvement/release decisions."
     ]

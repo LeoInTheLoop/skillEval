@@ -4,6 +4,22 @@
 
 ---
 
+## 2026-08-05 (UX-06) · self-judge 比较使用实际 CLI Judge，不看旧 snapshot
+
+更新 10 后的真实用户模拟立即打脸了刚完成的验收：历史 run 的 resolved model 是
+`qwen/qwen3.5-plus`，命令用 `--judge-model qwen/qwen3.5-plus` 覆盖 suite Judge，grade 却没有
+警告。纯 helper 用这个 model 会命中，根因是调用 helper 时只传 snapshot，比较的是 suite 里
+旧的 `openai/qwen-plus`，没有传 `resolve_judge()` 得到的实际覆盖值。
+
+`self_judge_warnings()` 现接受显式 `judge_model`；grade 必须传 resolved Judge，plan 仍使用
+suite 配置。回归测试刻意让 snapshot Judge 不同、CLI override 与 run `resolved_model` 相同，
+防止再写一个“配置内测试通过、普通用户覆盖路径失效”的假验收。模拟中的原命令已重放，警告
+现在出现在外发计划之前。
+
+**验证基线：381 passed / 1 skipped。**
+
+---
+
 ## 2026-08-05 (P4 收尾) · 普通 pipeline 与 grade 都能识别 self-judge
 
 P4 最后一条验收原本只在 immutable rescore 里实现：普通 `pipeline plan/run` 即使 suite 的
