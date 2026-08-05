@@ -165,6 +165,9 @@ skill_id）也照样写出草稿，但会在 dataset 头部和 `REVIEW.md` 里�
 拿 **pdf V1** 当输入，看能不能自己提出「按**任务类型**而非**文件格式**激活」这一条 ——
 这是 HANDOFF §4.2 里人工得出的结论。提不出来，说明证据给得不够或聚类没做。
 
+该基准已于 2026-08-05 用真实 V1 失败轨迹和一次独立建议调用跑通，结果、输入哈希与逐条
+验收见 [`analysis/pdf_v1_suggestion_capability_v1.0.md`](analysis/pdf_v1_suggestion_capability_v1.0.md)。
+
 ---
 
 ## 3. 停止条件（对话里也要守）
