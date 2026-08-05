@@ -273,6 +273,7 @@ scores.json + report.html + regression delta
 | --- | --- |
 | [evals/AUTHORING.md](evals/AUTHORING.md) | Case authoring, naming, versions, gold answers, and review |
 | [evals/RUNBOOK.md](evals/RUNBOOK.md) | Suites, execution, comparisons, artifacts, archiving, and baseline runs |
+| [evals/ARTICLE_INSIGHTS.md](evals/ARTICLE_INSIGHTS.md) | 腾讯技术文章《AI Agent & Skill 测评方案及落地实践》的关键点、功能归因与取舍 |
 | [evals/CASEGEN.md](evals/CASEGEN.md) | Automatic case generation and review |
 | [evals/TRAJECTORY.md](evals/TRAJECTORY.md) | Trajectory data, metrics, and judging |
 | [OPENCLAW.md](OPENCLAW.md) | OpenClaw setup, health checks, Docker, and troubleshooting |
