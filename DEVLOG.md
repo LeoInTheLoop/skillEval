@@ -4,6 +4,20 @@
 
 ---
 
+## 2026-08-05 (UX-07) · Judge 独立性按底层模型身份判断，未知就显式未知
+
+只做字符串全等会把同一模型经不同兼容端点暴露的名字当成两把尺子，例如执行模型
+`qwen/qwen3.5-plus`、Judge `openai/qwen3.5-plus`。现在统一比较去掉 provider 前缀后的
+model identity，这类组合会明确标 `self-judging`。刻意不维护厂商别名表：
+`qwen-plus` 是否等于某个版本化名称无法由本地配置可靠证明，仍需人工核实。
+
+另一个危险的假确定性是 OpenClaw 等 runtime-managed 配置：suite 只有矩阵 id，运行又没写
+`RunResult.resolved_model` 时，系统以前静默不警告，看起来像已经证明 Judge 独立。现在会显示
+`judge independence is unverified`。grade 也不再把 `RunResult.model`（矩阵标签）作为底层模型
+证据；只有 suite/runtime 的具体 model 或 `resolved_model` 才参与判断。
+
+**验证基线：384 passed / 1 skipped。**
+
 ## 2026-08-05 (UX-06) · self-judge 比较使用实际 CLI Judge，不看旧 snapshot
 
 更新 10 后的真实用户模拟立即打脸了刚完成的验收：历史 run 的 resolved model 是

@@ -149,6 +149,44 @@ def test_grade直接入口也会用run的resolved_model识别自己评自己(
     assert "diagnostic-only" in output
 
 
+def test_grade不把run的矩阵label当作实际执行model(tmp_path, monkeypatch, capsys):
+    from workflows import grade
+
+    # ``model`` 只是 suite matrix id；runtime 没交付 resolved_model 时，不能拿
+    # 这个同名 label 冒充底层模型身份并声称已经完成 self-judge 比较。
+    d = _write_run_dir(
+        tmp_path,
+        [_run(model="openai/qwen-plus", resolved_model=None)],
+        [_case()],
+    )
+    snapshot = yaml.safe_load((d / "config.snapshot.yaml").read_text(encoding="utf-8"))
+    snapshot["suite"].update({
+        "skills": {"mode": "full"},
+        "models": [{"id": "runtime-managed", "model": None}],
+        "runtime_options": {},
+        "scoring": {"judge": {
+            "id": "judge",
+            "model": "openai/qwen-plus",
+            "api_base_env": "JUDGE_BASE",
+            "api_key_env": "JUDGE_KEY",
+            "params": {},
+            "dimensions": [],
+        }},
+    })
+    (d / "config.snapshot.yaml").write_text(
+        yaml.safe_dump(snapshot, sort_keys=False), encoding="utf-8"
+    )
+    monkeypatch.setenv("JUDGE_BASE", "https://judge.example.test/v1")
+    monkeypatch.setenv("JUDGE_KEY", "test-key")
+    monkeypatch.setattr("sys.argv", ["grade", "--dir", str(d), "--dry-run"])
+
+    grade.main()
+
+    output = capsys.readouterr().out
+    assert "independence is unverified" in output
+    assert "self-judging" not in output
+
+
 # --- 静默变空的防护：judge 少判一条会抬高通过率 ---
 
 def test_judge_漏判一条会报错而不是静默缩小分母():

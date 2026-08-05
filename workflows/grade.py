@@ -640,6 +640,9 @@ def main() -> None:
         )
 
     judge = resolve_judge(snapshot, args)
+    # ``RunResult.model`` is the suite matrix label (often ``openclaw-default``),
+    # not evidence of the provider model that produced the answer.  Only the
+    # runtime-resolved identity can establish Judge independence here.
     observed_models = []
     runs_path = run_dir / "runs.jsonl"
     if runs_path.is_file():
@@ -647,7 +650,8 @@ def main() -> None:
             if not line.strip():
                 continue
             run = RunResult.model_validate_json(line)
-            observed_models.extend([run.resolved_model or "", run.model or ""])
+            if run.resolved_model:
+                observed_models.append(run.resolved_model)
     for warning in self_judge_warnings(
         snapshot.get("suite") or {},
         observed_models=observed_models,

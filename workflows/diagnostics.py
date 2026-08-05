@@ -13,30 +13,60 @@ from typing import Any
 from contracts import RoutingCase
 
 
+def canonical_model_identity(model: str) -> str:
+    """Return the provider-neutral part of a concrete model identifier.
+
+    LiteLLM-compatible identifiers commonly prefix the same upstream model
+    with the adapter/provider used to reach it (for example
+    ``openai/qwen3.5-plus`` and ``qwen/qwen3.5-plus``).  The provider is not an
+    independent evaluator, so compare the final path component.  We
+    deliberately do not maintain a vendor alias table: names such as
+    ``qwen-plus`` and ``qwen3.5-plus`` cannot be proven equivalent locally.
+    """
+    return model.strip().lower().rstrip("/").rsplit("/", 1)[-1]
+
+
 def self_judge_warnings(
     suite: dict[str, Any],
     *,
     observed_models: Iterable[str] = (),
     judge_model: str | None = None,
 ) -> list[str]:
-    """Warn when the candidate model is also configured as its own judge."""
+    """Warn when self-judging is detected or independence is unknowable."""
     judge = ((suite.get("scoring") or {}).get("judge") or {})
     actual_judge_model = judge_model or judge.get("model")
     if not actual_judge_model:
         return []
-    execution_models = {
+    configured_models = {
         model.get("model")
         for model in suite.get("models", [])
         if isinstance(model, dict) and model.get("model")
     }
     runtime_model = (suite.get("runtime_options") or {}).get("model")
     if runtime_model:
-        execution_models.add(runtime_model)
-    execution_models.update(model for model in observed_models if model)
-    if actual_judge_model not in execution_models:
+        configured_models.add(runtime_model)
+    resolved_models = {model for model in observed_models if model}
+    execution_models = configured_models | resolved_models
+
+    if not execution_models:
+        return [
+            f"judge independence is unverified: judge is `{actual_judge_model}`, but the "
+            "execution runtime has not exposed a concrete model identity in suite "
+            "configuration or RunResult.resolved_model. Do not treat different labels or "
+            "missing metadata as proof of an independent judge."
+        ]
+
+    judge_identity = canonical_model_identity(actual_judge_model)
+    matches = sorted(
+        model for model in execution_models
+        if canonical_model_identity(model) == judge_identity
+    )
+    if not matches:
         return []
+    execution_display = ", ".join(f"`{model}`" for model in matches)
     return [
-        f"execution model and judge model are both `{actual_judge_model}`; this is self-judging. "
+        f"judge `{actual_judge_model}` and execution model {execution_display} resolve to "
+        f"the same model identity `{judge_identity}`; this is self-judging. "
         "Keep its semantic scores diagnostic-only, or configure an independent judge before "
         "using them for improvement/release decisions."
     ]

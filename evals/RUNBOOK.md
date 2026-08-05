@@ -451,8 +451,11 @@ profile 配置而把 agent 调用串行化；Docker backend 每 conversation 一
 #     grade.py 会在外发之前就报错**，并列出当前已配好的 key 变量供你改指向。
 #     共用端点没关系，共用同一个 model 才有关系（考生不能改自己的卷子）。
 #     pipeline plan 会比较 suite 里的执行模型/runtime_options.model；grade 还会读取
-#     RunResult.resolved_model。发现与 judge.model 相同会显式标 self-judging，语义分只可诊断，
-#     不应用于改进或发布决策。字符串不同但实际指向同一 provider alias 时仍需人工确认。
+#     RunResult.resolved_model（不会把 RunResult.model 这个矩阵标签冒充实际模型）。比较时会
+#     去掉 provider/兼容端点前缀，所以 qwen/qwen3.5-plus 与 openai/qwen3.5-plus 仍会显式标
+#     self-judging；语义分只可诊断，不应用于改进或发布决策。runtime 没交付实际模型时会标
+#     judge independence is unverified，也不能据此声称独立。无法从名字推导的厂商 alias
+#     （如 qwen-plus 与 qwen3.5-plus）仍需人工确认，不做易误判的硬编码别名表。
 #     `--judge-model` 覆盖 suite 时，比较使用覆盖后的实际 Judge，不使用 snapshot 里的旧值。
 
 # 2d. 标准维度进 gate 前，离线对齐人工连续分（此命令不调用模型）

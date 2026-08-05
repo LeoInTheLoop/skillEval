@@ -162,6 +162,38 @@ def test不同judge不产生自己评自己误报():
     assert self_judge_warnings(suite) == []
 
 
+def test_provider前缀不同但底层model相同时仍预警():
+    from workflows.diagnostics import self_judge_warnings
+
+    suite = {
+        "models": [{"id": "candidate", "model": "qwen/qwen3.5-plus"}],
+        "runtime_options": {},
+        "scoring": {"judge": {"id": "judge", "model": "openai/qwen3.5-plus"}},
+    }
+
+    warnings = self_judge_warnings(suite)
+
+    assert len(warnings) == 1
+    assert "same model identity `qwen3.5-plus`" in warnings[0]
+    assert "self-judging" in warnings[0]
+
+
+def test_runtime未暴露实际model时明确提示独立性未验证():
+    from workflows.diagnostics import self_judge_warnings
+
+    suite = {
+        "models": [{"id": "openclaw-default", "model": None}],
+        "runtime_options": {},
+        "scoring": {"judge": {"id": "judge", "model": "openai/qwen-plus"}},
+    }
+
+    warnings = self_judge_warnings(suite)
+
+    assert len(warnings) == 1
+    assert "independence is unverified" in warnings[0]
+    assert "RunResult.resolved_model" in warnings[0]
+
+
 def test_real_plan_明确列出外发内容和单独授权(monkeypatch):
     monkeypatch.setenv("MODEL_BASE", "https://api.example.test/v1")
     from pipeline.plan import PlannedModel, build_egress_manifest
