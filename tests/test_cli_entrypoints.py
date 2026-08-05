@@ -405,6 +405,77 @@ def test_pipeline_init确认本地写入后仍需单独确认外发(tmp_path, mo
     assert not (tmp_path / "draft").exists()
 
 
+def test_pipeline_init额度失败给短恢复提示而不是第三方traceback(tmp_path, monkeypatch):
+    from pipeline import __main__ as pipeline_main
+
+    class ProviderQuotaError(Exception):
+        pass
+
+    ProviderQuotaError.__module__ = "litellm.exceptions"
+    source = tmp_path / "installed" / "alpha"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: alpha 能力\n---\n正文", encoding="utf-8"
+    )
+    monkeypatch.setenv("MODEL_KEY", "test-key")
+    monkeypatch.setenv("MODEL_BASE", "https://generator.example.test/v1")
+    monkeypatch.setattr("pipeline.initialize.load_dotenv", lambda *_: False)
+    monkeypatch.setattr(pipeline_main, "endpoint_health", lambda *_: (True, "DNS-only"))
+
+    def fail(*_args, **_kwargs):
+        try:
+            raise ProviderQuotaError("free quota has been exhausted")
+        except ProviderQuotaError as cause:
+            raise RuntimeError("题目生成失败") from cause
+
+    monkeypatch.setattr(pipeline_main, "execute_init", fail)
+    monkeypatch.setattr(sys, "argv", [
+        "pipeline", "init", "--source", str(source),
+        "--acceptance", "验收", "--dest-root", str(tmp_path / "subjects"),
+        "--output-dir", str(tmp_path / "draft"), "--count", "3",
+        "--api-base-env", "MODEL_BASE", "--api-key-env", "MODEL_KEY",
+        "--confirm", "--confirm-egress",
+    ])
+
+    with pytest.raises(SystemExit) as caught:
+        pipeline_main.main()
+
+    message = str(caught.value)
+    assert "quota is exhausted" in message
+    assert "--model-id <id> --model <provider/id>" in message
+    assert "--debug" in message
+    assert "Traceback" not in message
+
+
+def test_pipeline_init_debug保留原始异常(tmp_path, monkeypatch):
+    from pipeline import __main__ as pipeline_main
+
+    source = tmp_path / "installed" / "alpha"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: alpha 能力\n---\n正文", encoding="utf-8"
+    )
+    monkeypatch.setenv("MODEL_KEY", "test-key")
+    monkeypatch.setenv("MODEL_BASE", "https://generator.example.test/v1")
+    monkeypatch.setattr("pipeline.initialize.load_dotenv", lambda *_: False)
+    monkeypatch.setattr(pipeline_main, "endpoint_health", lambda *_: (True, "DNS-only"))
+    monkeypatch.setattr(
+        pipeline_main,
+        "execute_init",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("developer detail")),
+    )
+    monkeypatch.setattr(sys, "argv", [
+        "pipeline", "init", "--source", str(source),
+        "--acceptance", "验收", "--dest-root", str(tmp_path / "subjects"),
+        "--output-dir", str(tmp_path / "draft"), "--count", "3",
+        "--api-base-env", "MODEL_BASE", "--api-key-env", "MODEL_KEY",
+        "--confirm", "--confirm-egress", "--debug",
+    ])
+
+    with pytest.raises(RuntimeError, match="developer detail"):
+        pipeline_main.main()
+
+
 def test_pipeline_real_run_自动预检并要求单独确认外发(monkeypatch, capsys):
     from pipeline import __main__ as pipeline_main
 

@@ -16,6 +16,8 @@ from dotenv import load_dotenv
 from contracts import VERSION_DIR
 from pipeline.plan import credential_state
 from workflows.gen_cases import (
+    DEFAULT_GENERATOR_MODEL,
+    DEFAULT_GENERATOR_MODEL_ID,
     call_litellm,
     draft_dataset_name,
     generate_case_draft,
@@ -86,8 +88,8 @@ def build_init_plan(
     version: str = "v1",
     output_dir: str | Path | None = None,
     count: int = 10,
-    model_id: str = "qwen3.7-max-2026-05-17",
-    model: str = "openai/qwen3.7-max-2026-05-17",
+    model_id: str = DEFAULT_GENERATOR_MODEL_ID,
+    model: str = DEFAULT_GENERATOR_MODEL,
     api_base_env: str = "DASHSCOPE_BASE_URL",
     api_key_env: str = "DASHSCOPE_API_KEY",
 ) -> InitPlan:

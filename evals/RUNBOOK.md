@@ -367,6 +367,10 @@ Git 已跟踪的产品示例同样只收包、不删除。
 repair 仍不合格时不会生成可运行的 dataset/suite，但已付费的 raw response、可解析 candidate
 和校验错误会版本化保留在 `generation_failures/`，原命令可直接重跑。详见
 [CASEGEN.md](CASEGEN.md) §1.4。
+当前新草稿默认生成模型见 [MODEL_POLICY.md](MODEL_POLICY.md)；已从确认额度耗尽的
+`qwen3.7-max-2026-05-17` 切到 `qwen3.7-flash-2026-07-15`。这只影响没有显式传模型的新
+init，不会改任何已有 suite。provider 额度/鉴权失败时普通 CLI 只给压缩后的分类、恢复命令
+和根因；需要第三方完整 traceback 时原命令加 `--debug`。
 这里的“一致”按真正会进入评测的文件逐一计算 SHA-256：根目录 `_meta.json` 是
 SkillHub/skillEval 的安装与导入元数据，不是 skill 内容，因此 source 与 destination 两边都
 排除；`SKILL.md`、references、scripts 或其他附件只要有一字节变化，仍会拒绝复用并要求新

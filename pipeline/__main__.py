@@ -10,6 +10,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from adapters.runtimes.base import classify_error, classify_error_subkind
+from workflows.gen_cases import DEFAULT_GENERATOR_MODEL, DEFAULT_GENERATOR_MODEL_ID
 from workflows.run_routing import ROOT
 
 from .archive import (
@@ -47,6 +49,53 @@ def _parse_stages(value: str) -> set[str]:
     return stages
 
 
+def _exception_chain(error: BaseException) -> list[BaseException]:
+    chain = []
+    current: BaseException | None = error
+    seen: set[int] = set()
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        chain.append(current)
+        current = current.__cause__ or current.__context__
+    return chain
+
+
+def _init_failure_message(error: BaseException, *, model_id: str, model: str) -> str:
+    chain = _exception_chain(error)
+    classified = [
+        (item, classify_error(item), classify_error_subkind(item)) for item in chain
+    ]
+    subkind = next((subkind for _, _, subkind in classified if subkind), None)
+    if subkind == "provider_quota_exhausted":
+        action = (
+            "provider quota is exhausted. Choose an available model from "
+            "evals/MODEL_POLICY.md (or the local MODELS.local.md), then rerun the whole init "
+            "with both `--model-id <id> --model <provider/id>`. The existing content-identical "
+            "skill snapshot will be reused."
+        )
+    elif subkind == "provider_authentication":
+        action = "provider authentication failed; check --api-key-env and rerun the same command."
+    elif subkind in {"network_dns", "network_connectivity", "network_timeout"}:
+        action = (
+            "the generator endpoint is unreachable; check --api-base-env/network and rerun "
+            "the same command."
+        )
+    elif subkind == "provider_rate_limited":
+        action = "the provider rate limit was hit; wait for its reset window, then rerun."
+    else:
+        action = str(error)
+    leaf = chain[-1]
+    compact = " ".join(str(leaf).split())
+    if len(compact) > 500:
+        compact = compact[:499] + "…"
+    return (
+        f"generator failed before a runnable draft was created ({model_id} / {model}).\n"
+        f"Action: {action}\n"
+        f"Cause: {type(leaf).__name__}: {compact}\n"
+        "Add --debug to the same command only when a full traceback is needed."
+    )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="python -m pipeline",
@@ -70,8 +119,8 @@ def main() -> None:
     init_parser.add_argument("--version", default="v1")
     init_parser.add_argument("--output-dir")
     init_parser.add_argument("--count", type=int, default=10)
-    init_parser.add_argument("--model-id", default="qwen3.7-max-2026-05-17")
-    init_parser.add_argument("--model", default="openai/qwen3.7-max-2026-05-17")
+    init_parser.add_argument("--model-id", default=DEFAULT_GENERATOR_MODEL_ID)
+    init_parser.add_argument("--model", default=DEFAULT_GENERATOR_MODEL)
     init_parser.add_argument("--api-base-env", default="DASHSCOPE_BASE_URL")
     init_parser.add_argument("--api-key-env", default="DASHSCOPE_API_KEY")
     init_parser.add_argument("--confirm", action="store_true", help="approve local snapshot/draft writes")
@@ -81,6 +130,9 @@ def main() -> None:
         help="approve sending the displayed metadata/acceptance payload to the generator model",
     )
     init_parser.add_argument("--json", action="store_true", help="emit the init plan as JSON")
+    init_parser.add_argument(
+        "--debug", action="store_true", help="show the full traceback if generator execution fails"
+    )
 
     plan_parser = sub.add_parser("plan", help="validate and print the no-write execution plan")
     add_common(plan_parser)
@@ -203,12 +255,19 @@ def main() -> None:
         })
         if not healthy:
             raise SystemExit(f"refusing to initialize: generator endpoint check failed: {detail}")
-        execute_init(
-            plan,
-            acceptance=acceptance,
-            api_base_env=args.api_base_env,
-            api_key_env=args.api_key_env,
-        )
+        try:
+            execute_init(
+                plan,
+                acceptance=acceptance,
+                api_base_env=args.api_base_env,
+                api_key_env=args.api_key_env,
+            )
+        except Exception as error:  # user CLI boundary; --debug preserves developer traceback
+            if args.debug:
+                raise
+            raise SystemExit(
+                _init_failure_message(error, model_id=args.model_id, model=args.model)
+            ) from None
         return
 
     if args.command == "archive":

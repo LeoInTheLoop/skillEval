@@ -38,6 +38,8 @@ from workflows.litellm_support import quiet_completion
 
 ROOT = Path(__file__).parent.parent
 GENERATOR_VERSION = "p2-v0.4"
+DEFAULT_GENERATOR_MODEL_ID = "qwen3.7-flash-2026-07-15"
+DEFAULT_GENERATOR_MODEL = "openai/qwen3.7-flash-2026-07-15"
 SYSTEM_PROMPT = """你是 Agent Skill 路由评测题生成器。
 只基于给定的 skill metadata 和业务验收标准生成真实用户请求。
 输出必须是单个 JSON 对象：{"cases": [...], "review_notes": [...], "rejection_notes": [...]}。
@@ -982,8 +984,8 @@ def main() -> None:
         "--skip-rej-review", action="store_true",
         help="跳过 rej gold 的盲判交叉复审（省一次模型调用；REVIEW.md 会标明没做）",
     )
-    parser.add_argument("--model-id", default="qwen3.7-max-2026-05-17")
-    parser.add_argument("--model", default="openai/qwen3.7-max-2026-05-17")
+    parser.add_argument("--model-id", default=DEFAULT_GENERATOR_MODEL_ID)
+    parser.add_argument("--model", default=DEFAULT_GENERATOR_MODEL)
     parser.add_argument("--api-base-env", default="DASHSCOPE_BASE_URL")
     parser.add_argument("--api-key-env", default="DASHSCOPE_API_KEY")
     args = parser.parse_args()

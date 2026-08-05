@@ -29,6 +29,13 @@ provider error “free quota has been exhausted” during the humanizer test. Do
 not choose it for a new suite unless its provider quota is restored. The
 humanizer V1/V2 comparison therefore fixed `glm-5.1` on both sides.
 
+The repository's **new case-generation default** is now
+`openai/qwen3.7-flash-2026-07-15`, matching the newer local availability ledger dated
+2026-07-29. The old `qwen3.7-max-2026-05-17` default is not in the available rotation and is
+known exhausted. This default applies only when creating a new draft; an existing suite never changes
+models automatically. If a provider account has a different entitlement, pass both `--model-id` and
+`--model` explicitly and keep that choice fixed for comparable generation runs.
+
 ## Judge policy for full-eval absolute assertions
 
 Calibration set:

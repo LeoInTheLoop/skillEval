@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-05 (UX-04) · init 默认模型与额度策略一致，provider 失败不再刷屏
+
+普通用户模拟里，仓库默认的 `qwen3.7-max-2026-05-17` 已在公开 model policy 标成 quota
+exhausted，init plan 仍显示 credential configured/ready，真正调用后才用一整屏 LiteLLM/
+OpenAI traceback 报 403。DNS-only preflight 本来就不能验证 provider 鉴权、模型 ID 或额度，
+不能把它包装成真实 readiness。
+
+新草稿默认改为本地最新额度台账指定的 `qwen3.7-flash-2026-07-15`，三处 CLI/API 默认值共用
+常量；已有 suite 完全不自动换模型。`pipeline init` 在用户边界遍历 exception chain，识别
+quota/auth/DNS/connectivity/timeout/rate-limit，默认输出压缩根因和可复制的恢复参数；
+`--debug` 才保留完整 traceback。配额错误明确要求同时换 `--model-id` 与 `--model`、整次
+重跑，并说明内容一致的 snapshot 会复用，避免在同一结果里混模型。
+
+**验证基线：373 passed / 1 skipped。**
+
+---
+
 ## 2026-08-05 (UX-03) · 自动出题失败不再整批丢弃，balanced 变成可执行契约
 
 普通用户模拟先遇到 `glm-5.1` 把 `review_notes` 返回成对象数组，随后 30 题生成又虚构

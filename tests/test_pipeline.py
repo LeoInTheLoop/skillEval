@@ -256,6 +256,8 @@ def test_pipeline_init_plan只读且明确生成器外发内容(tmp_path, monkey
 
     assert plan.runnable
     assert plan.snapshot_state == "new"
+    assert plan.model_id == "qwen3.7-flash-2026-07-15"
+    assert plan.model == "openai/qwen3.7-flash-2026-07-15"
     assert not (tmp_path / "subjects").exists()
     assert not (tmp_path / "draft").exists()
     rendered = render_init_plan(plan)
