@@ -76,8 +76,11 @@ skill_id）也照样写出草稿，但会在 dataset 头部和 `REVIEW.md` 里�
 1. **题目只写业务目标，不写文件格式。**
    把「两个文件 / `out/` / 固定表头」写进 prompt，等于替模型把答案抄好了 ——
    No-Skill 基线也会做对，delta 归零，这批题就白写了。格式约束是 **skill 正文**的职责。
-2. **配比齐类**：`pos` / `amb` / `rej` 至少各一。缺类要报出来，不许静默少题。
-   `multi` 只在确实有多 skill 场景时才写。
+2. **配比是精确契约**：单 skill 默认按 `pos 40% / amb 30% / rej 30%`，多 skill catalog
+   按 `pos 40% / amb 30% / rej 20% / multi 10%` 做 largest-remainder 分配，且每个必需类型
+   至少一题。生成 prompt 会写出整数目标，返回数量必须逐类相等；不能用“每类至少一道”把
+   30 题交成 `15 pos / 1 amb / 14 rej` 后仍声称 balanced。`multi` 只在 catalog 至少有两个
+   skill 时要求。
 3. **ID 唯一且永不复用**，命名照 [AUTHORING.md](AUTHORING.md) §1.2。
 4. **gold 只能指向真实存在的 skill_id**（拿 `subjects/*/*/SKILL.md` 的 `name:` 核对）。
 5. **同一个 prompt 不能出现两次**，更不能同 prompt 不同 gold。
@@ -96,6 +99,24 @@ skill_id）也照样写出草稿，但会在 dataset 头部和 `REVIEW.md` 里�
 
 > 生成过程本身要可复现：把**用的模型 + 生成日期 + 基于哪个 skill content_hash**
 > 写进数据集文件头部的 `#` 注释行（`load_cases` 会跳过 `#` 开头的行）。
+
+### 1.4 生成失败不是丢弃已付费响应
+
+生成结果若 schema、gold、题数或精确配比不合法，生成器会把原始约束、候选输出与机器错误
+发回同一模型，做**最多一次**结构化 repair；因此 `pipeline init` 的 egress plan 按最大值
+申报三次请求：生成、条件式 repair、rej 盲判复审。
+
+- repair 成功：`<draft>/generation/` 保留每次 `*.raw.txt`、可解析的
+  `*.candidate.json`、SHA-256 和校验错误；正式 dataset 仍是 DRAFT。
+- repair 仍失败：只写
+  `<draft>/generation_failures/<timestamp>/` 与 `RECOVER.md`，**不写可运行的 JSONL/suite**。
+  用户可以从 candidate 手改一份新数据集，也可原命令重跑；failure bundle 不阻断重跑，且
+  历史响应不覆盖。
+- 首次模型调用本身未返回内容（认证、额度、网络错误）：没有候选可修，留给 provider 错误
+  路径处理，不虚构空 DRAFT。
+
+原始响应可能回显业务验收文字或用户题面，按用户输入处理；draft/failure 目录不得公开提交，
+分享前必须人工检查和脱敏。
 
 ---
 

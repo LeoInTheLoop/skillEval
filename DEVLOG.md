@@ -4,6 +4,26 @@
 
 ---
 
+## 2026-08-05 (UX-03) · 自动出题失败不再整批丢弃，balanced 变成可执行契约
+
+普通用户模拟先遇到 `glm-5.1` 把 `review_notes` 返回成对象数组，随后 30 题生成又虚构
+`asr-transcribe` / `calendar-sync` gold。原校验都正确拦下，但原始输出一字不留，用户无法修，
+只能重新付费生成；第二次成功的 30 题还是 `15 pos / 1 amb / 14 rej`，presence-only 校验却
+允许它自称 balanced。
+
+生成器现做一次有边界的结构化 repair：把原始约束、候选与完整机器错误发回同一模型；最多
+一次，不做无人值守循环。成功与失败响应都保留 raw/candidate/SHA/error manifest。两次仍
+失败时只写非 runnable 的 `generation_failures/<timestamp>/` + `RECOVER.md`，不会落 JSONL
+或 suite，也不会阻断同目录重跑。`pipeline init` 因此在批准前按最大外发量明确申报三次请求。
+
+题型配比同时改成 exact integer contract：单 skill 40/30/30，多 skill 40/30/20/10，按
+largest remainder 且每类至少一题；30 道单 skill 明确要求 12/9/9。模型偏到 15/1/14 会进入
+repair，而不是静默交给人审擦屁股。raw 可能回显业务输入，CASEGEN 已把留存/脱敏风险写明。
+
+**验证基线：371 passed / 1 skipped。**
+
+---
+
 ## 2026-08-05 (UX-02) · SkillHub `_meta.json` 让失败后的 init 永远无法续跑
 
 第 5 次更新后的普通用户模拟里，`meeting-and-brief@1.5.0` 明明与已有 V1 byte-identical，

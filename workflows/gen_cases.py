@@ -10,6 +10,8 @@ import hashlib
 import json
 import os
 import re
+from collections import Counter
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from typing import Callable
@@ -35,7 +37,7 @@ from contracts import (
 from workflows.litellm_support import quiet_completion
 
 ROOT = Path(__file__).parent.parent
-GENERATOR_VERSION = "p2-v0.3"
+GENERATOR_VERSION = "p2-v0.4"
 SYSTEM_PROMPT = """你是 Agent Skill 路由评测题生成器。
 只基于给定的 skill metadata 和业务验收标准生成真实用户请求。
 输出必须是单个 JSON 对象：{"cases": [...], "review_notes": [...], "rejection_notes": [...]}。
@@ -47,6 +49,35 @@ REJ_REVIEW_SYSTEM_PROMPT = """你是 Agent Skill 路由 gold 的独立复审器�
 给你一个 skill catalog 和若干真实用户请求，逐条判断 catalog 里**哪些** skill 应当被激活。
 输出必须是单个 JSON 对象：{"verdicts": [{"case_id": ..., "should_activate": [...], "why": ...}]}。
 只用 catalog 里出现过的 skill_id；不要输出 Markdown，不要输出隐藏思维链。"""
+REPAIR_SYSTEM_PROMPT = """你是 Agent Skill 路由评测题 JSON 修复器。
+根据原始生成约束和机器校验错误，修复候选 JSON；不得改变业务目标，不得发明 catalog 外的
+skill_id。输出必须是完整的单个 JSON 对象：{"cases": [...], "review_notes": [...],
+"rejection_notes": [...]}。不要输出 Markdown。"""
+
+
+@dataclass(frozen=True)
+class GenerationAttempt:
+    number: int
+    kind: str
+    raw: str
+    validation_error: str | None = None
+
+
+class GenerationFailure(ValueError):
+    """All paid generation responses failed validation; retain them for repair."""
+
+    def __init__(
+        self,
+        attempts: list[GenerationAttempt],
+        prompt: str,
+        recovery_dir: Path | None = None,
+    ):
+        self.attempts = tuple(attempts)
+        self.prompt = prompt
+        self.recovery_dir = recovery_dir
+        detail = attempts[-1].validation_error if attempts else "unknown generation failure"
+        recovery = f"\n已保留可人工修复的失败生成结果：{recovery_dir}" if recovery_dir else ""
+        super().__init__(f"生成结果在结构化修复后仍未通过校验：{detail}{recovery}")
 
 
 class RejectionNote(BaseModel):
@@ -186,6 +217,43 @@ def required_case_types(skills: list[SkillMeta]) -> tuple[CaseType, ...]:
     return ("pos", "amb", "rej", "multi")
 
 
+def expected_case_mix(
+    case_count: int, required_types: tuple[CaseType, ...]
+) -> dict[CaseType, int]:
+    """Return an exact, reviewable mix instead of a vague "balanced" wish."""
+    if case_count < len(required_types):
+        raise ValueError(f"case_count={case_count} 小于必需题型数 {len(required_types)}")
+    weights = (
+        {"pos": 0.4, "amb": 0.3, "rej": 0.2, "multi": 0.1}
+        if "multi" in required_types
+        else {"pos": 0.4, "amb": 0.3, "rej": 0.3}
+    )
+    # Largest remainder with a floor of one per required type. Stable tuple
+    # order resolves exact ties.
+    raw = {case_type: case_count * weights[case_type] for case_type in required_types}
+    result: dict[CaseType, int] = {
+        case_type: max(1, int(raw[case_type])) for case_type in required_types
+    }
+    unassigned = case_count - sum(result.values())
+    order = sorted(
+        required_types,
+        key=lambda case_type: (-(raw[case_type] % 1), required_types.index(case_type)),
+    )
+    for case_type in order[:unassigned]:
+        result[case_type] += 1
+    return result
+
+
+def require_case_mix(cases: list[RoutingCase], expected: dict[CaseType, int]) -> None:
+    actual = Counter(case.case_type for case in cases)
+    actual_mix = {case_type: actual.get(case_type, 0) for case_type in expected}
+    if actual_mix != expected:
+        raise ValueError(
+            f"题型配比不符合生成契约：期望 {expected}，实际 {actual_mix}。"
+            "不能用每类至少一道冒充 balanced 数据集。"
+        )
+
+
 def build_generation_prompt(
     *,
     skills: list[SkillMeta],
@@ -194,18 +262,8 @@ def build_generation_prompt(
     case_count: int,
     required_types: tuple[CaseType, ...],
 ) -> str:
-    if case_count < len(required_types):
-        raise ValueError(f"case_count={case_count} 小于必需题型数 {len(required_types)}")
-    mix = (
-        {"pos": 4, "amb": 3, "rej": 2, "multi": 1}
-        if "multi" in required_types and case_count == 10
-        else None
-    )
-    mix_text = (
-        json.dumps(mix, ensure_ascii=False)
-        if mix
-        else f"总数 {case_count}，{list(required_types)} 每类至少 1 道，其余优先补 amb/rej"
-    )
+    mix = expected_case_mix(case_count, required_types)
+    mix_text = json.dumps(mix, ensure_ascii=False)
     return f"""[目标 skill]
 {json.dumps(target_skill_ids, ensure_ascii=False)}
 
@@ -236,6 +294,23 @@ def build_generation_prompt(
 - severity 只允许 low、medium、high、critical，禁止 easy/hard 等其他枚举
 - review_notes 简述最需要人工复核的 amb/rej gold；不要输出隐藏思维链
 - rejection_notes 每项字段只有 case_id, why_not
+"""
+
+
+def build_repair_prompt(*, generation_prompt: str, raw: str, error: Exception) -> str:
+    return f"""[原始生成约束]
+{generation_prompt}
+
+[未通过校验的候选输出]
+{raw}
+
+[机器校验错误]
+{type(error).__name__}: {error}
+
+[修复要求]
+- 返回完整批次，不要只返回 diff
+- 严格满足题数、精确题型配比、ID scope、真实 skill_id 和 rejection_notes 约束
+- review_notes 必须是字符串数组；rejection_notes 必须是对象数组
 """
 
 
@@ -287,6 +362,7 @@ def generate_batch(
     api_key_env: str,
     params: dict[str, object],
     completion: Callable[..., str] = call_litellm,
+    attempt_sink: list[GenerationAttempt] | None = None,
 ) -> tuple[GeneratedBatch, str, tuple[CaseType, ...]]:
     required_types = required_case_types(skills)
     prompt = build_generation_prompt(
@@ -296,26 +372,82 @@ def generate_batch(
         case_count=case_count,
         required_types=required_types,
     )
-    raw = completion(
-        model=model,
-        api_base_env=api_base_env,
-        api_key_env=api_key_env,
-        params=params,
-        prompt=prompt,
-    )
-    batch = GeneratedBatch.model_validate_json(_extract_json(raw))
-    validate_case_set(
-        batch.cases,
-        skill_ids=(skill.skill_id for skill in skills),
-        required_types=required_types,
-        max_cases=30,
-    )
-    normalize_tags(batch.cases)
-    if len(skills) > 1:
-        require_rejection_rationale(batch)
-    if len(batch.cases) != case_count:
-        raise ValueError(f"要求生成 {case_count} 道，模型实际返回 {len(batch.cases)} 道")
-    return batch, prompt, required_types
+    attempts: list[GenerationAttempt] = []
+    current_prompt = prompt
+    current_system = SYSTEM_PROMPT
+    for number, kind in ((1, "generate"), (2, "repair")):
+        call_kwargs = {
+            "model": model,
+            "api_base_env": api_base_env,
+            "api_key_env": api_key_env,
+            "params": params,
+            "prompt": current_prompt,
+        }
+        # Preserve the established injected-completion signature on the first
+        # call; the repair call must explicitly identify its different role.
+        if number > 1:
+            call_kwargs["system"] = current_system
+        try:
+            raw = completion(**call_kwargs)
+        except Exception as error:
+            # A first-call provider failure has no candidate to save or repair.
+            # If the conditional repair call fails, keep the already paid first
+            # response and record why automated recovery stopped.
+            if number == 1:
+                raise
+            attempt = GenerationAttempt(
+                number=number,
+                kind=kind,
+                raw="",
+                validation_error=_one_line(
+                    f"provider error during repair: {type(error).__name__}: {error}", 2000
+                ),
+            )
+            attempts.append(attempt)
+            if attempt_sink is not None:
+                attempt_sink.append(attempt)
+            raise GenerationFailure(attempts, prompt) from error
+        try:
+            batch = GeneratedBatch.model_validate_json(_extract_json(raw))
+            validate_case_set(
+                batch.cases,
+                skill_ids=(skill.skill_id for skill in skills),
+                required_types=required_types,
+                max_cases=30,
+            )
+            normalize_tags(batch.cases)
+            if len(skills) > 1:
+                require_rejection_rationale(batch)
+            if len(batch.cases) != case_count:
+                raise ValueError(
+                    f"要求生成 {case_count} 道，模型实际返回 {len(batch.cases)} 道"
+                )
+            require_case_mix(batch.cases, expected_case_mix(case_count, required_types))
+        except Exception as error:  # schema + complete-batch contract, repaired once
+            attempt = GenerationAttempt(
+                number=number,
+                kind=kind,
+                raw=raw,
+                validation_error=_one_line(f"{type(error).__name__}: {error}", 2000),
+            )
+            attempts.append(attempt)
+            if attempt_sink is not None:
+                attempt_sink.append(attempt)
+            if number == 1:
+                current_prompt = build_repair_prompt(
+                    generation_prompt=prompt,
+                    raw=raw,
+                    error=error,
+                )
+                current_system = REPAIR_SYSTEM_PROMPT
+                continue
+            raise GenerationFailure(attempts, prompt) from error
+        attempt = GenerationAttempt(number=number, kind=kind, raw=raw)
+        attempts.append(attempt)
+        if attempt_sink is not None:
+            attempt_sink.append(attempt)
+        return batch, prompt, required_types
+    raise AssertionError("unreachable")
 
 
 def _one_line(text: str, limit: int = 240) -> str:
@@ -521,6 +653,69 @@ def draft_dataset_name(scope: str) -> str:
     return f"routing_{scope}_v0.1-draft.jsonl"
 
 
+def _write_attempt_files(directory: Path, attempts: list[GenerationAttempt]) -> None:
+    directory.mkdir(parents=True, exist_ok=False)
+    records = []
+    for attempt in attempts:
+        filename = f"attempt-{attempt.number:02d}-{attempt.kind}.raw.txt"
+        (directory / filename).write_text(attempt.raw, encoding="utf-8")
+        candidate_name = None
+        try:
+            candidate = json.loads(_extract_json(attempt.raw))
+        except (ValueError, json.JSONDecodeError):
+            pass
+        else:
+            candidate_name = f"attempt-{attempt.number:02d}-{attempt.kind}.candidate.json"
+            (directory / candidate_name).write_text(
+                json.dumps(candidate, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        records.append({
+            "number": attempt.number,
+            "kind": attempt.kind,
+            "raw_file": filename,
+            "raw_sha256": "sha256:" + hashlib.sha256(attempt.raw.encode()).hexdigest(),
+            "candidate_file": candidate_name,
+            "validation_error": attempt.validation_error,
+        })
+    (directory / "manifest.json").write_text(
+        json.dumps(
+            {"generator_version": GENERATOR_VERSION, "attempts": records},
+            ensure_ascii=False,
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def preserve_failed_generation(
+    *, output_dir: Path, failure: GenerationFailure, model: str
+) -> Path:
+    """Keep invalid paid responses in a non-runnable, human-editable bundle."""
+    root = output_dir / "generation_failures"
+    stem = datetime.now().astimezone().strftime("%Y%m%dT%H%M%S%z")
+    destination = root / stem
+    suffix = 1
+    while destination.exists():
+        suffix += 1
+        destination = root / f"{stem}-{suffix}"
+    _write_attempt_files(destination, list(failure.attempts))
+    (destination / "RECOVER.md").write_text(
+        "# Generation failed validation\n\n"
+        f"Model: `{model}`  \nGenerator: `{GENERATOR_VERSION}`\n\n"
+        "No runnable dataset or suite was created. The paid model responses are retained as "
+        "`*.raw.txt`; when JSON extraction succeeded, the adjacent `*.candidate.json` is the "
+        "best starting point for manual repair. Review the exact validation errors in "
+        "`manifest.json`. You may either edit a candidate into a separately named dataset, or "
+        "rerun the same init command: this failure bundle does not block reuse of the existing "
+        "skill snapshot and will not be overwritten. Never mark this bundle APPROVED without "
+        "human gold review.\n",
+        encoding="utf-8",
+    )
+    return destination
+
+
 def _render_rej_review(review: RejReview | None) -> list[str]:
     """复审那一段。三种状态都要显式印出来 —— 没跑、跑挂了、跑了没争议不是一回事。"""
     if review is None:
@@ -562,10 +757,13 @@ def write_draft(
     scope: str,
     reference: Path | None = None,
     rej_review: RejReview | None = None,
+    generation_attempts: list[GenerationAttempt] | None = None,
 ) -> tuple[Path, Path]:
     dataset_path = output_dir / draft_dataset_name(scope)
     suite_path = output_dir / "suite.yaml"
     reserved = [dataset_path, suite_path, output_dir / "REVIEW.md"]
+    if generation_attempts:
+        reserved.append(output_dir / "generation")
     if reference:
         reserved.append(output_dir / "case-diff.json")
     collisions = [path for path in reserved if path.exists()]
@@ -573,6 +771,8 @@ def write_draft(
         raise FileExistsError(f"拒绝覆盖已有草稿：{collisions}")
 
     output_dir.mkdir(parents=True, exist_ok=True)
+    if generation_attempts:
+        _write_attempt_files(output_dir / "generation", generation_attempts)
     header = [
         f"# generator.version: {GENERATOR_VERSION}",
         f"# generator.model: {model}",
@@ -667,18 +867,48 @@ def generate_case_draft(
             f"count={count} 不足以覆盖必需题型 {list(required_types)}；"
             f"请至少生成 {len(required_types)} 道"
         )
+    scope = _slug(target_skill_ids)
+    resolved_output = (
+        output_dir
+        if output_dir is not None
+        else ROOT / "evals" / "drafts" / scope
+    ).resolve()
+    collisions = [
+        path
+        for path in (
+            resolved_output / draft_dataset_name(scope),
+            resolved_output / "suite.yaml",
+            resolved_output / "REVIEW.md",
+            resolved_output / "generation",
+        )
+        if path.exists()
+    ]
+    if collisions:
+        raise FileExistsError(f"拒绝覆盖已有草稿：{collisions}")
     params: dict[str, object] = {"temperature": 0}
-    batch, prompt, required_types = generate_batch(
-        skills=skills,
-        target_skill_ids=target_skill_ids,
-        acceptance=acceptance,
-        case_count=count,
-        model=model,
-        api_base_env=api_base_env,
-        api_key_env=api_key_env,
-        params=params,
-        completion=completion or call_litellm,
-    )
+    generation_attempts: list[GenerationAttempt] = []
+    try:
+        batch, prompt, required_types = generate_batch(
+            skills=skills,
+            target_skill_ids=target_skill_ids,
+            acceptance=acceptance,
+            case_count=count,
+            model=model,
+            api_base_env=api_base_env,
+            api_key_env=api_key_env,
+            params=params,
+            completion=completion or call_litellm,
+            attempt_sink=generation_attempts,
+        )
+    except GenerationFailure as error:
+        recovery = preserve_failed_generation(
+            output_dir=resolved_output,
+            failure=error,
+            model=model,
+        )
+        raise GenerationFailure(
+            list(error.attempts), error.prompt, recovery_dir=recovery
+        ) from error
     # 第二次调用：拿同一批 rej 题去盲判一遍。放在写文件前，好让结论直接进 REVIEW.md。
     rej_review = (
         review_rejections(
@@ -700,12 +930,6 @@ def generate_case_draft(
         print(f"❌ 交叉复审对 {len(rej_review.disputed)}/{rej_review.reviewed} 道 rej 题有异议："
               f"{[verdict.case_id for verdict in rej_review.disputed]}\n"
               "  它们的 gold=∅ 很可能是错的；REVIEW.md 顶部有逐题理由，先解决再批准。")
-    scope = _slug(target_skill_ids)
-    resolved_output = (
-        output_dir
-        if output_dir is not None
-        else ROOT / "evals" / "drafts" / scope
-    ).resolve()
     dataset_path = resolved_output / draft_dataset_name(scope)
     suite = build_suite_draft(
         catalog_root=catalog_root,
@@ -731,6 +955,7 @@ def generate_case_draft(
         scope=scope,
         reference=reference,
         rej_review=rej_review,
+        generation_attempts=generation_attempts,
     )
     return dataset_path, suite_path, required_types
 

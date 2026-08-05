@@ -262,9 +262,10 @@ def test_pipeline_init_plan只读且明确生成器外发内容(tmp_path, monkey
     assert "no files written, no model call" in rendered
     assert "business goal and acceptance criteria" in rendered
     assert "SKILL.md body" in rendered and "do not send" in rendered
-    # 出题 + rej gold 盲判复审 = 两次外发，必须在批准前就申报清楚
-    assert plan.egress["planned_requests"] == 2
-    assert "2 requests" in rendered
+    # 出题 + 条件式结构修复 + rej gold 盲判复审：按最大外发量事先申报。
+    assert plan.egress["planned_requests"] == 3
+    assert "up to 3 requests" in rendered
+    assert "invalid generated candidate" in rendered
     assert "blind gold cross-review" in rendered
 
 

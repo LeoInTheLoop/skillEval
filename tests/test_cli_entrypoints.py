@@ -237,7 +237,13 @@ def test_gen_cases_拒绝没有理由的_rej_题(tmp_path, monkeypatch):
     ])
     with pytest.raises(ValueError, match="没有给出"):
         gen_cases.main()
-    assert not (tmp_path / "draft").exists()
+    # Invalid paid responses are deliberately retained, but never as a
+    # runnable dataset/suite.
+    assert not list((tmp_path / "draft").glob("*.jsonl"))
+    assert not (tmp_path / "draft" / "suite.yaml").exists()
+    failures = list((tmp_path / "draft" / "generation_failures").iterdir())
+    assert len(failures) == 1
+    assert (failures[0] / "RECOVER.md").is_file()
 
 
 def test_run_routing_main_用_mock_跑完整条链路(tmp_path, monkeypatch):

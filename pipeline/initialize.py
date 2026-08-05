@@ -143,15 +143,17 @@ def build_init_plan(
         )
     endpoint_value = os.environ.get(api_base_env, "")
     endpoint = urlparse(endpoint_value).hostname if endpoint_value else None
-    # 两次调用：① 生成题目 ② 拿生成出来的 rej 题面回去盲判一遍（gen_cases 的交叉复审）。
-    # 第二次不重发验收标准，只发 catalog metadata 和刚生成的题面。
+    # 最多三次调用：① 生成题目；结构/schema 不合法时 ② 修复一次；最后拿生成出来的
+    # rej 题面回去盲判（gen_cases 的交叉复审）。按最大外发量申报，不能等出错后才加预算。
     egress_base = {
         "approval_required": True,
-        "planned_requests": 2,
+        "planned_requests": 3,
+        "planned_requests_kind": "maximum (repair is conditional)",
         "destination": endpoint or "provider-default",
         "payload_categories": [
             "target skill routing metadata (name/description/triggers/exclusions)",
             "business goal and acceptance criteria",
+            "invalid generated candidate and validation errors, only if one repair is needed",
             "generated no-skill case prompts, sent back for blind gold cross-review",
         ],
         "not_sent": ["SKILL.md body", "API key value", "local output archives"],
@@ -195,7 +197,7 @@ def render_init_plan(plan: InitPlan) -> str:
         f"generator: {plan.model_id} ({plan.model}) | credential={plan.credential}",
         "",
         "external data movement:",
-        f"  {plan.egress['planned_requests']} requests → {plan.endpoint} "
+        f"  up to {plan.egress['planned_requests']} requests → {plan.endpoint} "
         f"| manifest={plan.egress['manifest_hash']}",
         *[f"  - send: {item}" for item in plan.egress["payload_categories"]],
         f"  - do not send: {', '.join(plan.egress['not_sent'])}",

@@ -5,16 +5,21 @@ import json
 
 import pytest
 
-from contracts import SkillMeta, dataset_review_status, load_cases, load_suite
+from contracts import RoutingCase, SkillMeta, dataset_review_status, load_cases, load_suite
 from workflows.gen_cases import (
     GENERATOR_VERSION,
+    GenerationFailure,
+    REPAIR_SYSTEM_PROMPT,
     REJ_REVIEW_SYSTEM_PROMPT,
     build_generation_prompt,
     build_rej_review_prompt,
     build_suite_draft,
+    expected_case_mix,
+    generate_case_draft,
     generate_batch,
     main,
     required_case_types,
+    require_case_mix,
     require_routing_metadata,
     resolve_skill_source,
     review_rejections,
@@ -149,6 +154,134 @@ def test_十题默认配比压低multi且rej禁止泄漏答案(tmp_path):
 
     assert '{"pos": 4, "amb": 3, "rej": 2, "multi": 1}' in prompt
     assert "禁止写“不需要画图" in prompt
+
+
+def test_三十题配比是精确契约而不是每类至少一道():
+    assert expected_case_mix(30, ("pos", "amb", "rej")) == {
+        "pos": 12,
+        "amb": 9,
+        "rej": 9,
+    }
+    assert expected_case_mix(10, ("pos", "amb", "rej", "multi")) == {
+        "pos": 4,
+        "amb": 3,
+        "rej": 2,
+        "multi": 1,
+    }
+    cases = []
+    for index, case_type in enumerate(("pos", "amb", "rej", "rej"), 1):
+        expected = [] if case_type == "rej" else ["alpha"]
+        scope = "none" if case_type == "rej" else "alpha"
+        cases.append(
+            RoutingCase.model_validate({
+                "id": f"{scope}-{case_type}-{index:02d}",
+                "prompt": f"题目 {index}",
+                "expected_skills": expected,
+            })
+        )
+    with pytest.raises(ValueError, match="期望.*实际"):
+        require_case_mix(cases, expected_case_mix(4, ("pos", "amb", "rej")))
+
+
+def test_schema不合格时只做一次结构化repair并保留两次响应(tmp_path):
+    skills = [
+        _skill("alpha", str(tmp_path / "alpha/SKILL.md")),
+        _skill("beta", str(tmp_path / "beta/SKILL.md")),
+    ]
+    invalid = json.loads(_valid_response())
+    invalid["review_notes"] = [{"case_id": "beta-amb-01", "why": "边界"}]
+    calls = []
+    attempts = []
+
+    def completion(**kwargs):
+        calls.append(kwargs)
+        return json.dumps(invalid, ensure_ascii=False) if len(calls) == 1 else _valid_response()
+
+    batch, _, _ = generate_batch(
+        skills=skills,
+        target_skill_ids=["alpha"],
+        acceptance="验收",
+        case_count=4,
+        model="openai/test",
+        api_base_env="TEST_BASE",
+        api_key_env="TEST_KEY",
+        params={"temperature": 0},
+        completion=completion,
+        attempt_sink=attempts,
+    )
+
+    assert len(batch.cases) == 4
+    assert len(calls) == 2 and calls[1]["system"] == REPAIR_SYSTEM_PROMPT
+    assert "review_notes" in calls[1]["prompt"]
+    assert attempts[0].validation_error and attempts[1].validation_error is None
+
+
+def test_repair仍失败会保留可编辑candidate且不阻断原命令重跑(tmp_path):
+    skill_dir = tmp_path / "catalog" / "alpha" / "v1"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: alpha\ndescription: alpha description\n---\n正文",
+        encoding="utf-8",
+    )
+    catalog_root, skills, targets = resolve_skill_source(skill_dir)
+    invalid = json.loads(_valid_response())
+    invalid["cases"] = [
+        {"id": "ghost-pos-01", "prompt": "不存在能力", "expected_skills": ["ghost"]},
+        {"id": "alpha-amb-01", "prompt": "边界", "expected_skills": ["alpha"]},
+        {"id": "none-rej-01", "prompt": "拒答", "expected_skills": []},
+    ]
+    output = tmp_path / "draft"
+
+    with pytest.raises(GenerationFailure) as caught:
+        generate_case_draft(
+            catalog_root=catalog_root,
+            skills=skills,
+            target_skill_ids=targets,
+            acceptance="验收",
+            count=3,
+            model_id="test",
+            model="openai/test",
+            api_base_env="TEST_BASE",
+            api_key_env="TEST_KEY",
+            output_dir=output,
+            completion=lambda **_: json.dumps(invalid, ensure_ascii=False),
+            review_rej=False,
+        )
+
+    recovery = caught.value.recovery_dir
+    assert recovery and (recovery / "RECOVER.md").is_file()
+    assert len(list(recovery.glob("*.raw.txt"))) == 2
+    assert len(list(recovery.glob("*.candidate.json"))) == 2
+    assert not (output / "suite.yaml").exists()
+    assert not list(output.glob("*.jsonl"))
+
+    # Failure bundles are versioned evidence, not a collision. A corrected
+    # response can reuse the same output path without deleting paid evidence.
+    valid_single = {
+        "cases": [
+            {"id": "alpha-pos-01", "prompt": "主要", "expected_skills": ["alpha"]},
+            {"id": "alpha-amb-01", "prompt": "边界", "expected_skills": ["alpha"]},
+            {"id": "none-rej-01", "prompt": "拒答", "expected_skills": []},
+        ],
+        "review_notes": ["复核边界"],
+        "rejection_notes": [],
+    }
+    dataset, suite, _ = generate_case_draft(
+        catalog_root=catalog_root,
+        skills=skills,
+        target_skill_ids=targets,
+        acceptance="验收",
+        count=3,
+        model_id="test",
+        model="openai/test",
+        api_base_env="TEST_BASE",
+        api_key_env="TEST_KEY",
+        output_dir=output,
+        completion=lambda **_: json.dumps(valid_single, ensure_ascii=False),
+        review_rej=False,
+    )
+    assert dataset.is_file() and suite.is_file()
+    assert (output / "generation" / "attempt-01-generate.raw.txt").is_file()
 
 
 def test_generate_batch_未知gold在生成阶段被拒绝(tmp_path):

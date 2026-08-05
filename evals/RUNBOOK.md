@@ -363,6 +363,10 @@ Git 已跟踪的产品示例同样只收包、不删除。
 加 `--confirm --confirm-egress`。它复用 `workflows.import_skill` 与
 `workflows.gen_cases`，创建不可变 snapshot 和 DRAFT dataset/suite，然后停在人审门。
 生成调用失败时 snapshot 保留；修复网络/模型后重跑，内容一致的 snapshot 会被复用。
+外发计划按最多三次申报：首次生成、仅在结构/契约错误时的一次 repair、rej gold 盲判复审。
+repair 仍不合格时不会生成可运行的 dataset/suite，但已付费的 raw response、可解析 candidate
+和校验错误会版本化保留在 `generation_failures/`，原命令可直接重跑。详见
+[CASEGEN.md](CASEGEN.md) §1.4。
 这里的“一致”按真正会进入评测的文件逐一计算 SHA-256：根目录 `_meta.json` 是
 SkillHub/skillEval 的安装与导入元数据，不是 skill 内容，因此 source 与 destination 两边都
 排除；`SKILL.md`、references、scripts 或其他附件只要有一字节变化，仍会拒绝复用并要求新
