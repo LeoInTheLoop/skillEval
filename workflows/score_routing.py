@@ -22,6 +22,11 @@ import yaml
 from sklearn.metrics import classification_report, confusion_matrix
 
 from workflows import metrics
+from workflows.calibration_registry import (
+    assess_gate_calibration,
+    calibrated_gate_outcome,
+    deterministic_trajectory_metrics,
+)
 from contracts import load_cases
 from evaluators import EvaluationContext, evaluate_all
 from evaluators.trajectory import merge_trajectory_metrics, write_trajectory_projection
@@ -71,18 +76,6 @@ def describe_dimension(name: str) -> str:
 
     d = dimensions.STANDARD_DIMENSIONS.get(name)
     return d.label if d else name
-
-
-def warn_uncalibrated(gate_cfg: dict) -> list[str]:
-    """gate 里出现语义维度时提醒 —— **不拦，只提醒**。
-
-    AGENTS.md §③/§22.6：未校准的 judge 分「只是另一个随机数」，本不该决定发版。
-    但强行拦住会让人以为功能坏了，所以这里只把话说清楚：想让它决定发版，
-    先做校准（judge vs 人工标注一致率 ≥ 80%）。默认不往 gate 里写维度就没这回事。
-    """
-    from workflows import dimensions
-
-    return sorted(set(gate_cfg) & set(dimensions.STANDARD_DIMENSIONS))
 
 
 def print_failure_summary(summary: dict) -> None:
@@ -397,8 +390,19 @@ def main() -> None:
     na = [m for m in gate_cfg if scores.get(m) is None]
     gate_rows = check_gate({m: c for m, c in gate_cfg.items() if scores.get(m) is not None},
                            scores)
+    deterministic_trajectory = deterministic_trajectory_metrics(
+        layers.get("trajectory") or {}, trajectory_cfg.get("mode", "judge")
+    )
+    calibration = assess_gate_calibration(
+        gate_cfg,
+        registry_path=(suite.get("scoring") or {}).get("calibration_registry"),
+        output_judge=judge,
+        trajectory_judge=layers.get("trajectory", {}).get("judge"),
+        deterministic_trajectory=deterministic_trajectory,
+    )
+    unqualified = set(calibration["unqualified"])
     # 一条都判不了时不许报 PASS：那是「没测」，不是「通过」
-    observed_passed = all(ok for *_, ok in gate_rows) if gate_rows else None
+    observed_passed = calibrated_gate_outcome(gate_rows, unqualified)
     is_mock = bool(snap.get("mock"))
     passed = None if is_mock else observed_passed
     verdict = (
@@ -409,14 +413,17 @@ def main() -> None:
     if gate_rows or na:
         print("\n发布门槛：")
         for metric, cond, got, ok in gate_rows:
-            status = "OBSERVED" if is_mock else ("PASS" if ok else "FAIL")
+            status = (
+                "OBSERVED" if is_mock else
+                "UNCAL" if metric in unqualified else
+                "PASS" if ok else "FAIL"
+            )
             print(f"  {status:<8} {metric:<20} {cond:<8} 实际 {got:.1%}")
         for m in na:
             print(f"  SKIP  {m:<20} {gate_cfg[m]:<8} N/A —— 不按 0 分处理")
-        uncal = warn_uncalibrated(gate_cfg)
-        if uncal:
-            print(f"  ⚠️ gate 里有语义维度 {uncal}：这是 judge 模型打的分，"
-                  f"未做校准（§22.6）就让它决定发版，等于让一个没对过表的尺子判生死")
+        if unqualified:
+            print(f"  ⚠️ judge-uncalibrated {sorted(unqualified)}：量具未登记或 fingerprint 不匹配；"
+                  "这些行不参与 PASS/FAIL，整体 gate 记 indeterminate")
         print(f"  → QUALITY VERDICT {verdict}" if is_mock else f"  → GATE {verdict}")
 
     gate_records = [
@@ -424,7 +431,8 @@ def main() -> None:
             "metric": m,
             "condition": c,
             "actual": g,
-            "pass": None if is_mock else ok,
+            "pass": None if is_mock or m in unqualified else ok,
+            **({"status": "judge-uncalibrated"} if m in unqualified else {}),
             **({"observed_pass": ok} if is_mock else {}),
         }
         for m, c, g, ok in gate_rows
@@ -451,6 +459,7 @@ def main() -> None:
         "failure_summary": failures,
         "judge": judge,          # 这批 assertion 分是谁判的；没跑 grade.py 就是 None
         "trajectory_judge": layers.get("trajectory", {}).get("judge"),
+        "calibration": calibration,
         "stability": {"exact_set_match": stability, "per_repeat": per_repeat},
         "reliability": {
             "k": k,
@@ -472,7 +481,7 @@ def main() -> None:
 
     gate_html = "".join(
         f"<tr><td>{m}</td><td>{c}</td><td>{g:.1%}</td>"
-        f"<td>{'OBSERVED ONLY' if is_mock else ('✅ PASS' if ok else '❌ FAIL')}</td></tr>"
+        f"<td>{'OBSERVED ONLY' if is_mock else ('⚠️ JUDGE-UNCALIBRATED' if m in unqualified else ('✅ PASS' if ok else '❌ FAIL'))}</td></tr>"
         for m, c, g, ok in gate_rows
     ) + "".join(f"<tr><td>{m}</td><td>{gate_cfg[m]}</td><td>N/A</td><td>⏭ SKIP</td></tr>"
                 for m in na)

@@ -26,6 +26,7 @@ from evaluators.outcome import EVALUATOR_VERSION as OUTCOME_VERSION
 from evaluators.reliability import EVALUATOR_VERSION as RELIABILITY_VERSION
 from evaluators.trajectory import EVALUATOR_VERSION as TRAJECTORY_VERSION
 from workflows import dimensions as dims
+from workflows.calibration_registry import load_registry
 from workflows.grade import (
     GRADER_VERSION,
     SYSTEM_PROMPT as OUTPUT_SYSTEM_PROMPT,
@@ -253,6 +254,17 @@ def build_rescore_plan(
         blocked.append("版本化评分产物已存在，拒绝覆盖：" + ", ".join(map(str, collisions)))
 
     scoring = suite.get("scoring") or {}
+    calibration_registry = None
+    registry_path = scoring.get("calibration_registry")
+    if registry_path:
+        try:
+            _registry, resolved_registry, registry_hash = load_registry(registry_path)
+            calibration_registry = {
+                "path": str(resolved_registry),
+                "sha256": registry_hash,
+            }
+        except (OSError, ValueError) as error:
+            blocked.append(f"calibration registry 无效：{error}")
     evaluator_names = scoring.get("evaluators") or list(_EVALUATOR_VERSIONS)
     evaluator_versions = {
         name: _EVALUATOR_VERSIONS.get(name, "unversioned") for name in evaluator_names
@@ -276,6 +288,7 @@ def build_rescore_plan(
         ) if "score" in stages else None,
         "evaluators": evaluator_versions,
         "gate": scoring.get("gate") or {},
+        "calibration_registry": calibration_registry,
     }
     source = {
         "source_run_dir": str(directory),

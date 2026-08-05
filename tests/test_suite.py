@@ -165,6 +165,15 @@ def test_argument_correctness_校准前只能出数不能进_gate():
         RoutingSuite.model_validate(data)
 
 
+def test_calibration_registry路径进入规范配置和hash():
+    data = _valid_suite()
+    baseline = RoutingSuite.model_validate(data).canonical_dict()
+    data["scoring"]["calibration_registry"] = "evals/calibration/registry.json"
+    calibrated = RoutingSuite.model_validate(data).canonical_dict()
+    assert calibrated["scoring"]["calibration_registry"].endswith("registry.json")
+    assert config_hash(baseline) != config_hash(calibrated)
+
+
 def test_suite_禁止明文_secret_但允许环境变量或secret_id():
     data = _valid_suite()
     data["runtime_options"] = {"api_key": "sk-plaintext"}

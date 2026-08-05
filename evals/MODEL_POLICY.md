@@ -51,5 +51,24 @@ use `qwen37max` unless a newer calibration supersedes this result.
 
 A/B swap consistency is `N/A` here because these are absolute assertions, not
 pairwise A/B judgments. This calibration does not authorize semantic
-dimensions to enter a release gate; calibration-registry enforcement remains
-P4 work.
+dimensions to enter a release gate. The qualified absolute-assertion gauges are
+registered in `evals/calibration/registry.json`; the registry binds the evidence
+report hash and exact model / endpoint-env / params / prompt / rubric fingerprint.
+Changing any of those fields invalidates qualification.
+
+Suites that intentionally gate on `assertion_pass_rate` must set:
+
+```yaml
+scoring:
+  calibration_registry: evals/calibration/registry.json
+```
+
+Standard semantic dimensions still have no human calibration entries. Putting
+one in a gate therefore produces `judge-uncalibrated` and an indeterminate gate,
+not PASS/FAIL. Generate a new report and registry with:
+
+```bash
+.venv/bin/python -m workflows.calibrate_judge \
+  --gold <human-gold.json> --grading <grading.json> \
+  --output <calibration.results.json> --registry-output <registry.json>
+```

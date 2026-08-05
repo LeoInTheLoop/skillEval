@@ -34,7 +34,10 @@ def _grading(tmp_path, *, second=False, failures=0, omit_second=False):
     path = tmp_path / "grading.j.json"
     path.write_text(
         json.dumps({
-            "judge": {"id": "j", "model": "m"},
+            "judge": {
+                "id": "j", "model": "m", "api_base_env": "BASE",
+                "params": {}, "system_prompt_hash": "sha256:prompt", "dimensions": {},
+            },
             "graded": [{"case_id": "c1", "repeat_index": 0, "expectations": expectations}],
             "judge_failures": [
                 {"case_id": f"failed-{i}", "repeat_index": 0, "error": "bad json"}
@@ -96,3 +99,23 @@ def test_calibrate_main从CLI写报告(tmp_path, monkeypatch, capsys):
     report = json.loads(output.read_text(encoding="utf-8"))
     assert report["calibrations"][0]["qualified_for_absolute_assertions"] is True
     assert "QUALIFIED" in capsys.readouterr().out
+
+
+def test_calibrate_main可同时生成有证据绑定的registry(tmp_path, monkeypatch):
+    from workflows import calibrate_judge
+    from workflows.calibration_registry import load_registry
+
+    output = tmp_path / "calibration.json"
+    registry = tmp_path / "registry.json"
+    monkeypatch.setattr(sys, "argv", [
+        "workflows.calibrate_judge",
+        "--gold", str(_gold(tmp_path)),
+        "--grading", str(_grading(tmp_path)),
+        "--output", str(output),
+        "--registry-output", str(registry),
+    ])
+    calibrate_judge.main()
+
+    loaded, _, _ = load_registry(registry)
+    assert loaded.entries[0].qualified is True
+    assert loaded.entries[0].evidence_report_sha256.startswith("sha256:")

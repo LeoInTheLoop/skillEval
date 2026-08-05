@@ -185,6 +185,8 @@ def main() -> None:
     parser.add_argument("--output", required=True)
     parser.add_argument("--agreement-threshold", type=float, default=0.80)
     parser.add_argument("--invalid-threshold", type=float, default=0.02)
+    parser.add_argument("--registry-output",
+                        help="同时把本报告登记成 absolute-assertion calibration registry")
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
@@ -198,6 +200,12 @@ def main() -> None:
     output = Path(args.output)
     if output.exists() and not args.force:
         raise FileExistsError(f"拒绝覆盖已有校准报告：{output}；需要重算时显式加 --force")
+    registry_output = Path(args.registry_output) if args.registry_output else None
+    if registry_output and registry_output.exists() and not args.force:
+        raise FileExistsError(
+            f"拒绝覆盖已有 calibration registry：{registry_output}；"
+            "需要重算时显式加 --force"
+        )
     report = calibrate(
         args.gold,
         args.grading,
@@ -206,6 +214,13 @@ def main() -> None:
     )
     output.parent.mkdir(parents=True, exist_ok=True)
     output.write_text(report.model_dump_json(indent=2) + "\n", encoding="utf-8")
+    if args.registry_output:
+        from workflows.calibration_registry import registry_from_report
+
+        assert registry_output is not None
+        registry = registry_from_report(output)
+        registry_output.parent.mkdir(parents=True, exist_ok=True)
+        registry_output.write_text(registry.model_dump_json(indent=2) + "\n", encoding="utf-8")
     for item in report.calibrations:
         judge_id = item.judge.get("id") or Path(item.grading_file).stem
         status = "QUALIFIED" if item.qualified_for_absolute_assertions else "NOT QUALIFIED"
@@ -214,6 +229,8 @@ def main() -> None:
             f"invalid={item.invalid_judge_output_rate:.1%} → {status}"
         )
     print(f"校准报告 → {output}")
+    if args.registry_output:
+        print(f"校准注册表 → {args.registry_output}")
 
 
 if __name__ == "__main__":

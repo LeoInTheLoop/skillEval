@@ -173,8 +173,65 @@ def test_same_facts_and_gauge_have_same_hash_and_reproducible_deterministic_scor
     assert "拒绝覆盖" in collision.blocked_reasons[-1]
 
 
+def test_registered_exact_judge_gauge_can_enforce_assertion_gate(tmp_path, monkeypatch):
+    run_dir = _run_dir(tmp_path)
+    snapshot_path = run_dir / "config.snapshot.yaml"
+    snapshot = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+    scoring = snapshot["suite"]["scoring"]
+    scoring["judge"] = {
+        "id": "local-label-does-not-matter",
+        "model": "openai/qwen-plus",
+        "api_base_env": "DASHSCOPE_BASE_URL",
+        "api_key_env": "DASHSCOPE_API_KEY",
+        "params": {"temperature": 0},
+        "dimensions": [
+            "faithfulness", "completeness", "relevancy", "instruction_following",
+        ],
+    }
+    scoring["calibration_registry"] = "evals/calibration/registry.json"
+    scoring["gate"] = {
+        "task_completion": ">= 0.80",
+        "assertion_pass_rate": ">= 0.80",
+    }
+    snapshot_path.write_text(yaml.safe_dump(snapshot, sort_keys=False), encoding="utf-8")
+    monkeypatch.setenv("DASHSCOPE_BASE_URL", "https://judge.example.test/v1")
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+
+    plan = build_rescore_plan(
+        run_dir, stages=("grade", "score"), grading_id="calibrated-assertions",
+    )
+    assert plan.runnable
+    assert plan.provenance["gauge"]["calibration_registry"]["sha256"].startswith("sha256:")
+
+    def calibrated_judge(**_):
+        return json.dumps({
+            "expectations": [{
+                "text": "结果正文包含 done", "passed": True, "evidence": "done",
+            }],
+            "dimensions": [
+                {"dimension": name, "score": 1.0, "evidence": "done"}
+                for name in (
+                    "faithfulness", "completeness", "relevancy", "instruction_following",
+                )
+            ],
+        }, ensure_ascii=False)
+
+    execute_rescore(plan, completion=calibrated_judge)
+    scores = json.loads(plan.paths.scores.read_text(encoding="utf-8"))
+    assert scores["gate_pass"] is True
+    assert scores["calibration"]["unqualified"] == []
+    assertion = scores["calibration"]["metrics"]["assertion_pass_rate"]
+    assert assertion["qualified"] is True
+    assert assertion["entry_id"] == "meeting-and-brief-assertions-qwenplus-v1"
+
+
 def test_judge_and_trajectory_rescore_are_versioned_and_feed_only_the_new_score(tmp_path, monkeypatch):
     run_dir = _run_dir(tmp_path, trajectory=True)
+    snapshot_path = run_dir / "config.snapshot.yaml"
+    snapshot = yaml.safe_load(snapshot_path.read_text(encoding="utf-8"))
+    snapshot["suite"]["scoring"]["judge"]["dimensions"] = ["faithfulness"]
+    snapshot["suite"]["scoring"]["gate"]["faithfulness"] = ">= 0.80"
+    snapshot_path.write_text(yaml.safe_dump(snapshot, sort_keys=False), encoding="utf-8")
     monkeypatch.setenv("TEST_JUDGE_BASE", "https://judge.example.test/v1")
     monkeypatch.setenv("TEST_JUDGE_KEY", "test-key")
     (run_dir / "grading.judge-v1.json").write_text('{"old":true}\n', encoding="utf-8")
@@ -192,7 +249,9 @@ def test_judge_and_trajectory_rescore_are_versioned_and_feed_only_the_new_score(
             "expectations": [{
                 "text": "结果正文包含 done", "passed": True, "evidence": "done",
             }],
-            "dimensions": [],
+            "dimensions": [{
+                "dimension": "faithfulness", "score": 1.0, "evidence": "done",
+            }],
         }, ensure_ascii=False)
 
     def trajectory_judge(**_):
@@ -215,6 +274,12 @@ def test_judge_and_trajectory_rescore_are_versioned_and_feed_only_the_new_score(
     assert grading["rescore"]["grading_id"] == "judge-round-02"
     assert trajectory["rescore"]["source_runs_sha256"] == runs_hash
     assert scores["scores"]["assertion_pass_rate"] == 1.0
+    assert scores["scores"]["faithfulness"] == 1.0
+    assert scores["gate_pass"] is None
+    assert scores["quality_verdict"] == "indeterminate"
+    assert scores["calibration"]["unqualified"] == ["faithfulness"]
+    semantic_gate = next(item for item in scores["gate"] if item["metric"] == "faithfulness")
+    assert semantic_gate["status"] == "judge-uncalibrated" and semantic_gate["pass"] is None
     # hybrid 中 deterministic tool selection=1.0 优先，不被 judge 的 0.75 覆盖。
     assert scores["scores"]["tool_selection"] == 1.0
     assert json.loads((run_dir / "grading.judge-v1.json").read_text())["old"] is True

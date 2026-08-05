@@ -1,0 +1,53 @@
+{
+  "schema_version": "1.0",
+  "entries": [
+    {
+      "entry_id": "meeting-and-brief-assertions-qwenplus-v1",
+      "calibration_id": "meeting-and-brief-absolute-assertions-v1.0",
+      "scope": "absolute_assertions",
+      "dimension": null,
+      "judge": {
+        "model": "openai/qwen-plus",
+        "api_base_env": "DASHSCOPE_BASE_URL",
+        "params": {"temperature": 0},
+        "system_prompt_hash": "sha256:4d0362f4a214079d",
+        "dimensions": {
+          "faithfulness": "v1",
+          "completeness": "v1",
+          "relevancy": "v1",
+          "instruction_following": "v1"
+        }
+      },
+      "agreement": 0.9,
+      "invalid_output_rate": 0.0,
+      "qualified": true,
+      "evidence_report": "evals/calibration/meeting_and_brief_assertions_v1.0.results.json",
+      "evidence_report_sha256": "sha256:eaf958d21735f763a6432e422c54bc08bd7c4ab07e1245146f4beb2ead51d34d",
+      "evidence_judge_id": "qwenplus-inputs"
+    },
+    {
+      "entry_id": "meeting-and-brief-assertions-qwen37max-v1",
+      "calibration_id": "meeting-and-brief-absolute-assertions-v1.0",
+      "scope": "absolute_assertions",
+      "dimension": null,
+      "judge": {
+        "model": "openai/qwen3.7-max",
+        "api_base_env": "DASHSCOPE_BASE_URL",
+        "params": {"temperature": 0},
+        "system_prompt_hash": "sha256:4d0362f4a214079d",
+        "dimensions": {
+          "faithfulness": "v1",
+          "completeness": "v1",
+          "relevancy": "v1",
+          "instruction_following": "v1"
+        }
+      },
+      "agreement": 1.0,
+      "invalid_output_rate": 0.0,
+      "qualified": true,
+      "evidence_report": "evals/calibration/meeting_and_brief_assertions_v1.0.results.json",
+      "evidence_report_sha256": "sha256:eaf958d21735f763a6432e422c54bc08bd7c4ab07e1245146f4beb2ead51d34d",
+      "evidence_judge_id": "qwen37max"
+    }
+  ]
+}

@@ -226,6 +226,9 @@ class SuiteScoringSpec(_StrictModel):
         default_factory=lambda: ["outcome", "trajectory", "reliability", "efficiency"]
     )
     gate: dict[str, str] = Field(default_factory=dict)
+    # 只有 registry 中与 judge/rubric fingerprint 精确匹配且 qualified 的语义量具
+    # 才能进入发布 gate。路径本身随 suite 进入 snapshot/config hash。
+    calibration_registry: str | None = Field(default=None, min_length=1)
     # 不写 = 不做语义判定，只跑确定性断言。默认关闭是有意的：
     # 每开一次就是一次真实外发 + 一笔钱 + 一个不完全可复现的数字。
     judge: SuiteJudgeSpec | None = None

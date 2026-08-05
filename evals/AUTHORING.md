@@ -220,8 +220,10 @@ scoring:
    `workflows/compare_runs.py` 靠它识别「模型没换但判定标准变了」。
 
 **维度分默认不进 gate。** 它们是 judge 打的分，未经校准不该决定发版
-（AGENTS.md §22.6：judge vs 人工一致率 ≥ 80% 才够格）。硬要放进 `scoring.gate`
-也不会被拦，只会在评分时提示 `judge-uncalibrated`。
+（AGENTS.md §22.6：judge vs 人工一致率 ≥ 80% 才够格）。写进 `scoring.gate` 后，
+评分器会用 `scoring.calibration_registry` 精确核对量具 fingerprint；未登记、未达标或
+模型/参数/prompt/rubric 任一不匹配都会标 `judge-uncalibrated`，整体 gate 为
+indeterminate，不会误报 PASS/FAIL。
 
 ### 2.4 Full eval 多轮题
 
