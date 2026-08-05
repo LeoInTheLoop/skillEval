@@ -361,12 +361,20 @@ aggregate report 负责回答“总体好不好”；定位一次具体失败时
 .venv/bin/python -m pipeline inspect --run-dir outputs/<group>/<execution-id> \
   --case <case-id> --status failed --skill <skill-id> --model <model-substring>
 .venv/bin/python -m pipeline inspect --run-dir outputs/<group>/<execution-id> --json
+
+# 一条命令生成完全离线的自包含 HTML；加 --open 可同时用默认浏览器打开
+.venv/bin/python -m pipeline view --run-dir outputs/<group>/<execution-id> --open
 ```
 
 视图先给 release verdict、真实执行模型和状态计数，再按 case/turn/repeat 展开问题、期望/实际
 skill、输出、tool、artifact 与结构化错误；同时列出 snapshot、冻结 dataset、runs、scores、
 HTML、各版本 Judge grading 和改进建议的确切路径。过滤后仍保留总记录数；没有命中时列出
 可用 case id，避免把拼错过滤条件误读成“run 没数据”。该入口只读历史事实，不重新评分。
+
+`pipeline view` 默认写 `<run-dir>/viewer.html`，内嵌同一份 trace 投影和浏览器端过滤逻辑，
+不加载 CDN/字体/遥测，也不启动网络服务；snapshot、runs、scores、report、grading 和 suggestion
+均为相对本地链接。相同内容重复执行会显示 `reused`；已有不同内容时拒绝覆盖，确需重建才加
+`--force`。模型输出会先做 HTML 转义，不能把 run 里的文本当页面脚本执行。
 
 ---
 

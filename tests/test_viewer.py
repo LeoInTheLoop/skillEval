@@ -6,7 +6,13 @@ from pathlib import Path
 
 import yaml
 
-from pipeline.viewer import filter_records, inspect_run, render_inspection
+from pipeline.viewer import (
+    filter_records,
+    inspect_run,
+    render_html_view,
+    render_inspection,
+    write_html_view,
+)
 
 
 def _run_dir(tmp_path: Path) -> Path:
@@ -93,7 +99,9 @@ def test_inspection把完整证据链投影到一个只读结构(tmp_path):
     assert view["observed_models"] == ["provider/model-a"]
     assert view["records"][0]["prompt"] == "make alpha"
     assert view["records"][0]["tool_calls"] == ["write"]
+    assert view["records"][0]["tool_call_details"][0]["arguments"] == {}
     assert view["records"][0]["artifacts"] == ["out/a.md"]
+    assert view["records"][0]["artifact_details"][0]["size_bytes"] == 3
     assert view["paths"]["reports"] == ["outputs/group/trial-01/report.html"]
     assert view["paths"]["suggestions"] == [
         "outputs/group/trial-01/improvements/round-01/suggestions.json"
@@ -107,6 +115,8 @@ def test_inspection可按case_status_skill_model组合过滤(tmp_path):
     selected = filter_records(
         records,
         case_id="none-rej-01",
+        turn=1,
+        repeat=0,
         status="failed",
         skill="alpha",
         model="MODEL-A",
@@ -115,6 +125,7 @@ def test_inspection可按case_status_skill_model组合过滤(tmp_path):
     assert len(selected) == 1
     assert selected[0]["error_subkind"] == "network_timeout"
     assert filter_records(records, status="skipped") == []
+    assert filter_records(records, turn=2) == []
 
 
 def test_terminal_view先显示verdict与证据路径再列record(tmp_path):
@@ -128,3 +139,49 @@ def test_terminal_view先显示verdict与证据路径再列record(tmp_path):
     assert "prompt: make alpha" in rendered
     assert "answer: done" in rendered
     assert "network/network_timeout: timed out" in rendered
+
+
+def test_html_viewer自包含且具备六类过滤与证据链接(tmp_path):
+    run_dir = _run_dir(tmp_path)
+    view = inspect_run(run_dir, root=tmp_path)
+    output = run_dir / "viewer.html"
+
+    rendered = render_html_view(view, root=tmp_path, output=output)
+
+    assert "https://" not in rendered
+    assert "<script src=" not in rendered
+    for field in ("case", "turn", "repeat", "status", "skill", "model"):
+        assert f'id="{field}"' in rendered
+    assert "href='runs.jsonl'" in rendered
+    assert "href='report.html'" in rendered
+    assert "provider/model-a" in rendered
+    assert "network/network_timeout: timed out" in rendered
+    assert "Loaded skills" in rendered
+    assert "size_bytes" in rendered
+
+
+def test_html_viewer转义模型输出而不是把它当markup执行(tmp_path):
+    run_dir = _run_dir(tmp_path)
+    view = inspect_run(run_dir, root=tmp_path)
+    view["records"][0]["final_answer"] = "</script><img src=x onerror=alert(1)>"
+
+    rendered = render_html_view(view, root=tmp_path, output=run_dir / "viewer.html")
+
+    assert "</script><img" not in rendered
+    assert "&lt;/script&gt;&lt;img" in rendered
+
+
+def test_html_viewer幂等复用且不同内容不静默覆盖(tmp_path):
+    run_dir = _run_dir(tmp_path)
+    view = inspect_run(run_dir, root=tmp_path)
+    output = run_dir / "viewer.html"
+
+    first, action = write_html_view(view, root=tmp_path, output=output)
+    assert (first, action) == (output, "written")
+    assert write_html_view(view, root=tmp_path, output=output)[1] == "reused"
+    output.write_text("user content", encoding="utf-8")
+
+    import pytest
+    with pytest.raises(FileExistsError, match="--force"):
+        write_html_view(view, root=tmp_path, output=output)
+    assert write_html_view(view, root=tmp_path, output=output, force=True)[1] == "written"

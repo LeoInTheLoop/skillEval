@@ -7,7 +7,9 @@ shape; it never rewrites ``runs.jsonl`` or scoring artifacts.
 """
 from __future__ import annotations
 
+import html
 import json
+import os
 from collections import Counter
 from pathlib import Path
 from typing import Any, Iterable
@@ -110,7 +112,9 @@ def inspect_run(run_dir: str | Path, *, root: str | Path) -> dict[str, Any]:
             "selected_skills": list(raw.get("selected_skills") or []),
             "loaded_skills": list(raw.get("loaded_skills") or []),
             "tool_calls": _tool_names(raw.get("tool_calls")),
+            "tool_call_details": list(raw.get("tool_calls") or []),
             "artifacts": _artifact_paths(raw.get("artifacts")),
+            "artifact_details": list(raw.get("artifacts") or []),
             "final_answer": raw.get("final_answer"),
             "error_kind": raw.get("error_kind"),
             "error_subkind": raw.get("error_subkind"),
@@ -165,6 +169,8 @@ def filter_records(
     records: Iterable[dict[str, Any]],
     *,
     case_id: str | None = None,
+    turn: int | None = None,
+    repeat: int | None = None,
     status: str | None = None,
     skill: str | None = None,
     model: str | None = None,
@@ -173,6 +179,10 @@ def filter_records(
     selected = []
     for record in records:
         if case_id and record["case_id"] != case_id:
+            continue
+        if turn is not None and record["turn"] != turn:
+            continue
+        if repeat is not None and record["repeat"] != repeat:
             continue
         if status and record["status"] != status:
             continue
@@ -187,6 +197,153 @@ def filter_records(
             continue
         selected.append(record)
     return selected
+
+
+def _html_value(value: Any) -> str:
+    if isinstance(value, (dict, list)):
+        value = json.dumps(value, ensure_ascii=False)
+    return html.escape(str(value if value is not None else ""), quote=True)
+
+
+def _evidence_links(
+    view: dict[str, Any], *, root: Path, output: Path
+) -> list[tuple[str, str]]:
+    links = []
+    for key, value in view["paths"].items():
+        values = value if isinstance(value, list) else [value]
+        for item in values:
+            if not item:
+                continue
+            path = Path(item)
+            absolute = path if path.is_absolute() else root / path
+            href = os.path.relpath(absolute, output.parent)
+            links.append((key, href))
+    return links
+
+
+def render_html_view(
+    view: dict[str, Any], *, root: str | Path, output: str | Path
+) -> str:
+    """Build a self-contained, offline HTML trace viewer."""
+    workspace = Path(root).resolve()
+    target = Path(output).resolve()
+    verdict = view.get("quality_verdict") or (
+        "PASS" if view.get("gate_pass") is True
+        else "FAIL" if view.get("gate_pass") is False
+        else "N/A"
+    )
+    metrics = "".join(
+        f"<div class='metric'><b>{_html_value(name)}</b><span>{_html_value(value)}</span></div>"
+        for name, value in sorted((view.get("metrics") or {}).items())
+    ) or "<div class='metric'><b>metrics</b><span>N/A</span></div>"
+    evidence = "".join(
+        f"<li><b>{_html_value(kind)}</b>: <a href='{_html_value(href)}'>{_html_value(href)}</a></li>"
+        for kind, href in _evidence_links(view, root=workspace, output=target)
+    )
+    rows = []
+    for record in view["records"]:
+        skills = sorted({
+            *record.get("expected_skills", []),
+            *record.get("selected_skills", []),
+            *record.get("loaded_skills", []),
+        })
+        detail_parts = []
+        for label, key in (
+            ("Prompt", "prompt"), ("Answer", "final_answer"),
+            ("Loaded skills", "loaded_skills"),
+            ("Tools", "tool_call_details"), ("Artifacts", "artifact_details"),
+        ):
+            value = record.get(key)
+            if value:
+                detail_parts.append(
+                    f"<h4>{label}</h4><pre>{_html_value(value)}</pre>"
+                )
+        if record.get("error"):
+            classification = (
+                f"{record.get('error_kind') or 'unclassified'}/"
+                f"{record.get('error_subkind') or '-'}: {record['error']}"
+            )
+            detail_parts.append(f"<h4>Error</h4><pre>{_html_value(classification)}</pre>")
+        rows.append(
+            "<tr "
+            f"data-case='{_html_value(record['case_id']).lower()}' "
+            f"data-turn='{record['turn']}' data-repeat='{record['repeat']}' "
+            f"data-status='{_html_value(record['status']).lower()}' "
+            f"data-skill='{_html_value(' '.join(skills)).lower()}' "
+            f"data-model='{_html_value(record.get('model')).lower()}'>"
+            f"<td><span class='status {record['status']}'>{_html_value(record['status'])}</span></td>"
+            f"<td>{_html_value(record['case_id'])}</td>"
+            f"<td>{record['turn']}</td><td>{record['repeat']}</td>"
+            f"<td>{_html_value(record.get('model'))}</td>"
+            f"<td>{_html_value(record['expected_skills'] or ['∅'])}</td>"
+            f"<td>{_html_value(record['selected_skills'] or ['∅'])}</td>"
+            f"<td><details><summary>open</summary>{''.join(detail_parts) or 'No detail'}</details></td>"
+            "</tr>"
+        )
+    return f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>skillEval run · {_html_value(view['run_dir'])}</title>
+<style>
+:root{{--bg:#f7f7f5;--panel:#fff;--ink:#202124;--muted:#697077;--line:#ddd;--accent:#315efb}}
+*{{box-sizing:border-box}} body{{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 system-ui,sans-serif}}
+main{{max-width:1500px;margin:auto;padding:24px}} h1{{font-size:22px;margin:0 0 4px}} .muted{{color:var(--muted)}}
+.summary,.filters,.evidence{{background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:16px;margin:16px 0}}
+.metrics{{display:flex;flex-wrap:wrap;gap:8px}} .metric{{min-width:150px;padding:8px 12px;background:#f1f3f5;border-radius:7px}}
+.metric span{{display:block;font-size:18px}} .filters{{display:grid;grid-template-columns:repeat(6,minmax(120px,1fr));gap:10px}}
+label{{font-size:12px;color:var(--muted)}} input,select{{width:100%;padding:7px;border:1px solid var(--line);border-radius:5px;background:white}}
+.table-wrap{{overflow:auto;background:white;border:1px solid var(--line);border-radius:10px}} table{{border-collapse:collapse;width:100%}}
+th,td{{text-align:left;vertical-align:top;padding:9px;border-bottom:1px solid var(--line)}} th{{position:sticky;top:0;background:#f1f3f5}}
+.status{{padding:2px 7px;border-radius:10px;background:#e8eaed}} .status.ok{{background:#d8f3dc}} .status.failed{{background:#ffd6d6}}
+pre{{white-space:pre-wrap;max-width:700px}} a{{color:var(--accent)}} #count{{font-weight:600}}
+@media(max-width:900px){{.filters{{grid-template-columns:repeat(2,1fr)}}}}
+</style></head><body><main>
+<h1>skillEval run viewer</h1><div class="muted">{_html_value(view['run_dir'])}</div>
+<section class="summary"><p><b>Suite:</b> {_html_value(view.get('suite_id'))} · <b>mode:</b> {_html_value(view.get('skill_mode'))}
+· <b>skillcfg:</b> {_html_value(view.get('skill_cfg'))} · <b>verdict:</b> {_html_value(verdict)}</p>
+<p><b>Models:</b> {_html_value(view.get('observed_models') or ['unresolved'])} · <b>config:</b> {_html_value(view.get('config_hash'))}</p>
+<div class="metrics">{metrics}</div></section>
+<section class="evidence"><h2>Evidence files</h2><ul>{evidence}</ul></section>
+<section class="filters">
+<label>Case<input id="case" placeholder="case id"></label>
+<label>Turn<input id="turn" type="number" min="1" placeholder="all"></label>
+<label>Repeat<input id="repeat" type="number" min="0" placeholder="all"></label>
+<label>Status<select id="status"><option value="">all</option><option>ok</option><option>failed</option><option>skipped</option></select></label>
+<label>Skill<input id="skill" placeholder="skill id"></label>
+<label>Model<input id="model" placeholder="model"></label>
+</section>
+<p id="count"></p><div class="table-wrap"><table><thead><tr><th>Status</th><th>Case</th><th>Turn</th><th>Repeat</th><th>Model</th><th>Expected</th><th>Selected</th><th>Trace</th></tr></thead>
+<tbody id="records">{''.join(rows)}</tbody></table></div>
+<script>
+const ids=['case','turn','repeat','status','skill','model'];const numeric=new Set(['turn','repeat']);
+const rows=[...document.querySelectorAll('#records tr')];
+function apply(){{const q=Object.fromEntries(ids.map(id=>[id,document.getElementById(id).value.trim().toLowerCase()]));let n=0;
+for(const row of rows){{const show=ids.every(id=>!q[id]||(numeric.has(id)?row.dataset[id]===q[id]:row.dataset[id].includes(q[id])));row.hidden=!show;if(show)n++;}}
+document.getElementById('count').textContent=`${{n}} / ${{rows.length}} records`;}}
+ids.forEach(id=>document.getElementById(id).addEventListener('input',apply));apply();
+</script></main></body></html>"""
+
+
+def write_html_view(
+    view: dict[str, Any],
+    *,
+    root: str | Path,
+    output: str | Path,
+    force: bool = False,
+) -> tuple[Path, str]:
+    """Write or reuse a deterministic viewer without silent overwrite."""
+    target = Path(output).expanduser().resolve()
+    content = render_html_view(view, root=root, output=target)
+    if target.exists():
+        if target.read_text(encoding="utf-8") == content:
+            return target, "reused"
+        if not force:
+            raise FileExistsError(
+                f"viewer exists with different content: {target}; rerun with --force to replace it"
+            )
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(content, encoding="utf-8")
+    return target, "written"
 
 
 def render_inspection(view: dict[str, Any]) -> str:

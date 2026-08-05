@@ -4,6 +4,23 @@
 
 ---
 
+## 2026-08-05 (P7-2) · 一条命令生成自包含离线 HTML Viewer
+
+`pipeline view --run-dir ... --open` 现在从第 14 次的只读 projection 生成单文件
+`viewer.html`：无需 npm、数据库或常驻服务，页面不加载任何外部资源。六类过滤覆盖
+case/turn/repeat/status/skill/model；每条轨迹展开 prompt、answer、tool、artifact 与错误分类，
+证据列表链接 snapshot/runs/scores/report/各版 grading/suggestions。
+
+输出确定且幂等：相同内容二次执行复用，目标文件内容不同时默认拒绝覆盖，显式 `--force` 才
+替换。所有模型文本和路径先做 HTML escape，历史 run 不能注入 script。真实
+meeting-and-brief full run 已生成 13 KB 离线页，3 条记录、Judge 与 suggestion 链接齐全；
+原 `runs.jsonl` / `scores.json` 未修改。
+
+这是 P7 Viewer/一条命令的可用薄切片，不等于 P7 全部完成：新机器 bootstrap、失败 case 单独
+重跑和跨 run 的统一历史首页仍待实现。
+
+**验证基线：393 passed / 1 skipped。**
+
 ## 2026-08-05 (P7-1) · 单次 run 的全链路只读检查入口
 
 新增 `pipeline inspect --run-dir ...`，把原本散在 snapshot、冻结 dataset、runs、scores、

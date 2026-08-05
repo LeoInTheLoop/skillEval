@@ -15,6 +15,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 MODULES = [
     "pipeline",
@@ -81,6 +82,50 @@ def test_pipeline_inspect子命令_help_可用(monkeypatch, capsys):
     assert "--run-dir" in out
     assert "--case" in out
     assert "--status" in out
+
+
+def test_pipeline_view子命令_help_可用(monkeypatch, capsys):
+    from pipeline import __main__ as pipeline_main
+
+    monkeypatch.setattr(sys, "argv", ["pipeline", "view", "--help"])
+    with pytest.raises(SystemExit) as exit_info:
+        pipeline_main.main()
+    assert exit_info.value.code == 0
+    out = capsys.readouterr().out
+    assert "--run-dir" in out
+    assert "--open" in out
+    assert "--force" in out
+
+
+def test_pipeline_view一条命令生成离线HTML且二次复用(tmp_path, monkeypatch, capsys):
+    from pipeline import __main__ as pipeline_main
+
+    run_dir = tmp_path / "outputs" / "group" / "trial"
+    inputs = run_dir / "inputs"
+    inputs.mkdir(parents=True)
+    (inputs / "dataset.jsonl").write_text(
+        '{"id":"alpha-pos-01","prompt":"x","expected_skills":["alpha"]}\n',
+        encoding="utf-8",
+    )
+    (run_dir / "config.snapshot.yaml").write_text(yaml.safe_dump({
+        "config_hash": "sha256:x",
+        "suite": {"suite_id": "alpha", "dataset": "unused", "skills": {
+            "mode": "routing_only", "cfg": "v1",
+        }},
+    }), encoding="utf-8")
+    (run_dir / "runs.jsonl").write_text(json.dumps({
+        "case_id": "alpha-pos-01", "repeat_index": 0, "model": "model-a",
+        "selected_skills": ["alpha"], "final_answer": "ok",
+    }) + "\n", encoding="utf-8")
+    monkeypatch.setattr(pipeline_main, "ROOT", tmp_path)
+    monkeypatch.setattr(sys, "argv", ["pipeline", "view", "--run-dir", str(run_dir)])
+
+    pipeline_main.main()
+    assert (run_dir / "viewer.html").is_file()
+    assert "VIEWER written" in capsys.readouterr().out
+
+    pipeline_main.main()
+    assert "VIEWER reused" in capsys.readouterr().out
 
 
 @pytest.mark.parametrize(

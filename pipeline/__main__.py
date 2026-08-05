@@ -5,6 +5,7 @@ import argparse
 import json
 import subprocess
 import sys
+import webbrowser
 from datetime import datetime
 from pathlib import Path
 
@@ -27,7 +28,7 @@ from .plan import build_plan, render_plan
 from .plan import endpoint_health
 from .rescore import build_rescore_plan, execute_rescore, parse_stages as parse_rescore_stages
 from .rescore import render_rescore_plan
-from .viewer import filter_records, inspect_run, render_inspection
+from .viewer import filter_records, inspect_run, render_inspection, write_html_view
 
 
 def _run_command(command: list[str]) -> None:
@@ -222,10 +223,22 @@ def main() -> None:
     )
     inspect_parser.add_argument("--run-dir", required=True, help="exact run execution directory")
     inspect_parser.add_argument("--case", help="show one exact case id")
+    inspect_parser.add_argument("--turn", type=int, help="show one turn index")
+    inspect_parser.add_argument("--repeat", type=int, help="show one repeat index")
     inspect_parser.add_argument("--status", choices=("ok", "failed", "skipped"))
     inspect_parser.add_argument("--skill", help="match expected, selected, or loaded skill")
     inspect_parser.add_argument("--model", help="case-insensitive substring of observed model")
     inspect_parser.add_argument("--json", action="store_true", help="emit the inspection as JSON")
+
+    view_parser = sub.add_parser(
+        "view",
+        help="build a self-contained offline HTML viewer for one immutable run",
+    )
+    view_parser.add_argument("--run-dir", required=True, help="exact run execution directory")
+    view_parser.add_argument("--output", help="default: <run-dir>/viewer.html")
+    view_parser.add_argument("--open", action="store_true", help="open the local HTML after writing")
+    view_parser.add_argument("--force", action="store_true", help="replace a different existing viewer")
+    view_parser.add_argument("--json", action="store_true", help="emit output path/action as JSON")
 
     args = parser.parse_args()
     if args.command == "init":
@@ -377,6 +390,8 @@ def main() -> None:
         view["records"] = filter_records(
             view["records"],
             case_id=args.case,
+            turn=args.turn,
+            repeat=args.repeat,
             status=args.status,
             skill=args.skill,
             model=args.model,
@@ -386,6 +401,24 @@ def main() -> None:
             json.dumps(view, indent=2, ensure_ascii=False)
             if args.json else render_inspection(view)
         )
+        return
+
+    if args.command == "view":
+        try:
+            view = inspect_run(args.run_dir, root=ROOT)
+            output = Path(args.output).expanduser() if args.output else Path(args.run_dir) / "viewer.html"
+            target, action = write_html_view(
+                view, root=ROOT, output=output, force=args.force
+            )
+        except (FileNotFoundError, FileExistsError, ValueError, json.JSONDecodeError) as error:
+            raise SystemExit(f"cannot build viewer: {error}") from error
+        payload = {"viewer": str(target), "action": action, "opened": bool(args.open)}
+        print(json.dumps(payload, ensure_ascii=False) if args.json else (
+            f"VIEWER {action}: {target}\n"
+            "offline/self-contained; original runs.jsonl and scores are unchanged"
+        ))
+        if args.open:
+            webbrowser.open(target.as_uri())
         return
 
     if args.command == "plan":
