@@ -19,6 +19,7 @@ import pandas as pd
 import yaml
 
 from workflows import dimensions
+from workflows.diagnostics import derive_verdict
 
 ROOT = Path(__file__).parent.parent
 # 路由的 + full 的都列出来：一个 run 只会有其中一组，另一组整列为 None 会被过滤掉。
@@ -87,6 +88,12 @@ def load_run(path: Path) -> dict:
         "source_runs_sha256": rescore.get("source_runs_sha256"),
         "n_skills": len(snap.get("skill_catalog") or snap.get("skills") or {}),
         "gate_pass": scores.get("gate_pass"),
+        # 单一推导点的输入，不是结论本身（HANDOFF ★ 更新 16）：全系统故障的 run
+        # 不能只因为 scores.json 里存着一个旧 gate_pass 就在对比表里冒充 PASS/FAIL。
+        "n_runs": scores.get("n_runs"),
+        "n_system_failures": scores.get("n_system_failures") or 0,
+        "system_failures_by_kind": scores.get("system_failures_by_kind") or {},
+        "run_mode": scores.get("run_mode"),
         "scores": scores.get("scores", {}),
         # score_* already records mean/stddev/min/max.  Pull the means into the
         # cross-run table; old results simply show N/A instead of fake zeroes.
@@ -200,7 +207,17 @@ def main() -> None:
 
     print("对比的 run：")
     for r in runs:
-        gate = {True: "PASS", False: "FAIL", None: "—"}[r["gate_pass"]]
+        # scores.json 写在这次 update 之前的旧文件没有 n_runs/n_system_failures，
+        # 那种情况下没有结构化 counts 可核对，只能原样显示 gate_pass。
+        if r.get("n_runs") is not None:
+            outcome = derive_verdict(
+                n_runs=r["n_runs"], n_system_failures=r["n_system_failures"],
+                system_failures_by_kind=r["system_failures_by_kind"],
+                observed_passed=r["gate_pass"], is_mock=r.get("run_mode") == "synthetic_mock",
+            )
+            gate = outcome["label"]
+        else:
+            gate = {True: "PASS", False: "FAIL", None: "—"}[r["gate_pass"]]
         print(f"  {r['dir']:<52} skills={r['n_skills']} gate={gate}")
 
     axes, derived, polluted, judges = diff_configs(runs)

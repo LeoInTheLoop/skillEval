@@ -35,7 +35,7 @@ from evaluators import (
     scalar_metrics,
 )
 from evaluators.trajectory import merge_trajectory_metrics, write_trajectory_projection
-from workflows.diagnostics import failure_summary
+from workflows.diagnostics import derive_verdict, failure_summary, system_failure_counts
 from workflows.grade import load_grading, resolve_run_dataset
 
 ROOT = Path(__file__).parent.parent
@@ -100,8 +100,15 @@ def print_failure_summary(summary: dict) -> None:
 
 def write_no_evaluable_report(d: Path, *, suite: dict, snap: dict, summary: dict,
                               attempted: int, n_cases: int, html_path: str,
-                              scores_path: str | Path | None = None) -> None:
+                              scores_path: str | Path | None = None,
+                              all_runs: list[dict] | None = None) -> None:
     """Persist a useful report even when every request failed externally."""
+    is_mock = bool(snap.get("mock"))
+    n_system_failures, system_failures_by_kind = system_failure_counts(all_runs or [])
+    outcome = derive_verdict(
+        n_runs=attempted, n_system_failures=n_system_failures,
+        system_failures_by_kind=system_failures_by_kind, observed_passed=None, is_mock=is_mock,
+    )
     gate_cfg = suite.get("scoring", {}).get("gate", {}) or {}
     gate = [
         {"metric": metric, "condition": condition, "actual": None, "pass": None}
@@ -110,18 +117,21 @@ def write_no_evaluable_report(d: Path, *, suite: dict, snap: dict, summary: dict
     payload = {
         "run_dir": d.name,
         "suite_id": suite.get("suite_id"),
-        "run_mode": "synthetic_mock" if snap.get("mock") else "real",
-        "quality_verdict": "not_evaluated" if snap.get("mock") else "indeterminate",
+        "run_mode": "synthetic_mock" if is_mock else "real",
+        "quality_verdict": outcome["quality_verdict"],
+        "verdict_reason": outcome["reason"],
         "config_hash": snap.get("config_hash"),
         "model": snap.get("resolved_model", {}).get("id"),
         "n_cases": n_cases,
         "n_runs": attempted,
         "n_evaluable_runs": 0,
+        "n_system_failures": n_system_failures,
+        "system_failures_by_kind": system_failures_by_kind,
         "scores": {},
         "failure_summary": summary,
         "gate": gate,
-        "gate_enforced": not bool(snap.get("mock")),
-        "gate_pass": None,
+        "gate_enforced": not is_mock,
+        "gate_pass": outcome["gate_pass"],
     }
     score_target = Path(scores_path) if scores_path is not None else d / "scores.json"
     score_target.parent.mkdir(parents=True, exist_ok=True)
@@ -137,6 +147,7 @@ def write_no_evaluable_report(d: Path, *, suite: dict, snap: dict, summary: dict
         "\n".join([
             "<h2>Skill Routing Report — no evaluable runs</h2>",
             f"<p>attempted runs: {attempted}; failures: {summary['failed_runs']} ({by_kind})</p>",
+            f"<p><b>Verdict: {outcome['label']}</b> — {outcome['reason']}</p>",
             "<p>Routing quality and gate are <b>N/A</b>: infrastructure/provider failures are not task failures.</p>",
             "<h3>Next steps</h3><ul>", actions, "</ul>",
         ]), encoding="utf-8")
@@ -217,6 +228,7 @@ def main() -> None:
         write_no_evaluable_report(
             d, suite=suite, snap=snap, summary=failures, attempted=len(all_runs),
             n_cases=len(cases), html_path=args.html, scores_path=scores_output,
+            all_runs=all_runs,
         )
         print(f"\nscores.json + report.html → {d}")
         return
@@ -409,12 +421,16 @@ def main() -> None:
     # 一条都判不了时不许报 PASS：那是「没测」，不是「通过」
     observed_passed = calibrated_gate_outcome(gate_rows, unqualified)
     is_mock = bool(snap.get("mock"))
-    passed = None if is_mock else observed_passed
-    verdict = (
-        "NOT EVALUATED（synthetic mock 只验证管道）"
-        if is_mock else
-        {True: "PASS", False: "FAIL", None: "无法判定（可判维度全为 N/A）"}[passed]
+    # 单一推导点（HANDOFF ★ 更新 16）：即使这里已经走到了「有可评 run」的正常路径，
+    # 仍然要用同一份结构化 counts 校验一遍，跟 score_full / viewer / compare_runs 一致。
+    n_system_failures, system_failures_by_kind = system_failure_counts(all_runs)
+    outcome = derive_verdict(
+        n_runs=attempted, n_system_failures=n_system_failures,
+        system_failures_by_kind=system_failures_by_kind, observed_passed=observed_passed,
+        is_mock=is_mock,
     )
+    passed = outcome["gate_pass"]
+    verdict = outcome["label"]
     if gate_rows or na:
         print("\n发布门槛：")
         for metric, cond, got, ok in gate_rows:
@@ -430,6 +446,7 @@ def main() -> None:
             print(f"  ⚠️ judge-uncalibrated {sorted(unqualified)}：量具未登记或 fingerprint 不匹配；"
                   "这些行不参与 PASS/FAIL，整体 gate 记 indeterminate")
         print(f"  → QUALITY VERDICT {verdict}" if is_mock else f"  → GATE {verdict}")
+        print(f"    {outcome['reason']}")
 
     gate_records = [
         {
@@ -451,14 +468,13 @@ def main() -> None:
         "run_dir": d.name,
         "suite_id": suite.get("suite_id"),
         "run_mode": "synthetic_mock" if is_mock else "real",
-        "quality_verdict": (
-            "not_evaluated"
-            if is_mock else
-            {True: "pass", False: "fail", None: "indeterminate"}[passed]
-        ),
+        "quality_verdict": outcome["quality_verdict"],
+        "verdict_reason": outcome["reason"],
         "config_hash": snap.get("config_hash"),
         "model": snap.get("resolved_model", {}).get("id"),
         "n_cases": int(n_cases), "n_runs": int(attempted), "n_evaluable_runs": int(total),
+        "n_system_failures": n_system_failures,
+        "system_failures_by_kind": system_failures_by_kind,
         "scores": scores,
         "evaluation": layers,
         "evaluator_manifest": evaluator_gauges,

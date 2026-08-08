@@ -16,7 +16,9 @@ from typing import Any, Iterable
 
 import yaml
 
+from adapters.runtimes.base import classify_error_text_subkind
 from contracts import load_cases
+from workflows.diagnostics import derive_verdict, system_failure_counts
 
 
 def _read_json(path: Path) -> dict[str, Any] | None:
@@ -100,6 +102,15 @@ def inspect_run(run_dir: str | Path, *, root: str | Path) -> dict[str, Any]:
         actual_model = raw.get("resolved_model") or raw.get("model")
         if actual_model:
             observed_models.add(str(actual_model))
+        error_kind = raw.get("error_kind")
+        error_text = raw.get("error")
+        # Historical runs (e.g. OpenClaw CLI failures) often never got a stored
+        # error_subkind at all; reclassify from the immutable error text instead
+        # of rewriting runs.jsonl (HANDOFF ★ 更新 16).
+        error_subkind = raw.get("error_subkind") or (
+            classify_error_text_subkind(error_text, error_kind)
+            if error_kind and error_text else None
+        )
         records.append({
             "case_id": case_id,
             "turn": int(raw.get("turn_index") or 1),
@@ -116,13 +127,25 @@ def inspect_run(run_dir: str | Path, *, root: str | Path) -> dict[str, Any]:
             "artifacts": _artifact_paths(raw.get("artifacts")),
             "artifact_details": list(raw.get("artifacts") or []),
             "final_answer": raw.get("final_answer"),
-            "error_kind": raw.get("error_kind"),
-            "error_subkind": raw.get("error_subkind"),
-            "error": raw.get("error"),
+            "reasoning": raw.get("reasoning"),
+            "error_kind": error_kind,
+            "error_subkind": error_subkind,
+            "error": error_text,
         })
 
     scores = _read_json(directory / "scores.json")
     statuses = Counter(record["status"] for record in records)
+    n_system_failures, system_failures_by_kind = system_failure_counts(
+        {"error_kind": record["error_kind"]} for record in records
+    )
+    is_mock = bool(snapshot.get("mock")) or (scores or {}).get("run_mode") == "synthetic_mock"
+    # 单一推导点（HANDOFF ★ 更新 16）：stale scores.json 里的 quality_verdict/gate_pass
+    # 只当候选输入，全系统故障时会被结构化 counts 短路覆盖，不当作首屏结论直接展示。
+    outcome = derive_verdict(
+        n_runs=len(records), n_system_failures=n_system_failures,
+        system_failures_by_kind=system_failures_by_kind,
+        observed_passed=(scores or {}).get("gate_pass"), is_mock=is_mock,
+    )
     grading = sorted(
         _relative(path, workspace)
         for pattern in ("grading.*.json", "grading/**/*.json")
@@ -149,8 +172,16 @@ def inspect_run(run_dir: str | Path, *, root: str | Path) -> dict[str, Any]:
         "matching_record_count": len(records),
         "available_case_ids": sorted({record["case_id"] for record in records}),
         "status_counts": dict(sorted(statuses.items())),
-        "gate_pass": scores.get("gate_pass") if scores else None,
-        "quality_verdict": scores.get("quality_verdict") if scores else None,
+        # 首屏结论：唯一推导点算出来的，不是 scores.json 里存的历史值原样透传。
+        "gate_pass": outcome["gate_pass"],
+        "quality_verdict": outcome["quality_verdict"],
+        "verdict_label": outcome["label"],
+        "verdict_reason": outcome["reason"],
+        "n_system_failures": n_system_failures,
+        "system_failures_by_kind": system_failures_by_kind,
+        # 归档值：只做展示，不当结论——两者不一致时说明 scores.json 是旧尺子/旧代码算的。
+        "historical_quality_verdict": (scores or {}).get("quality_verdict"),
+        "historical_gate_pass": (scores or {}).get("gate_pass"),
         "metrics": scores.get("scores", {}) if scores else {},
         "paths": {
             "snapshot": _relative(snapshot_path, workspace) if snapshot_path.is_file() else None,
@@ -227,10 +258,13 @@ def render_html_view(
     """Build a self-contained, offline HTML trace viewer."""
     workspace = Path(root).resolve()
     target = Path(output).resolve()
-    verdict = view.get("quality_verdict") or (
-        "PASS" if view.get("gate_pass") is True
-        else "FAIL" if view.get("gate_pass") is False
-        else "N/A"
+    verdict = view.get("verdict_label") or "N/A"
+    verdict_reason = view.get("verdict_reason") or ""
+    historical = view.get("historical_quality_verdict")
+    archived_note = (
+        f" (archived scores.json said {_html_value(historical)} — superseded by the "
+        "structured re-derivation above)"
+        if historical is not None and historical != view.get("quality_verdict") else ""
     )
     metrics = "".join(
         f"<div class='metric'><b>{_html_value(name)}</b><span>{_html_value(value)}</span></div>"
@@ -250,6 +284,7 @@ def render_html_view(
         detail_parts = []
         for label, key in (
             ("Prompt", "prompt"), ("Answer", "final_answer"),
+            ("Reasoning", "reasoning"),
             ("Loaded skills", "loaded_skills"),
             ("Tools", "tool_call_details"), ("Artifacts", "artifact_details"),
         ):
@@ -301,6 +336,7 @@ pre{{white-space:pre-wrap;max-width:700px}} a{{color:var(--accent)}} #count{{fon
 <h1>skillEval run viewer</h1><div class="muted">{_html_value(view['run_dir'])}</div>
 <section class="summary"><p><b>Suite:</b> {_html_value(view.get('suite_id'))} · <b>mode:</b> {_html_value(view.get('skill_mode'))}
 · <b>skillcfg:</b> {_html_value(view.get('skill_cfg'))} · <b>verdict:</b> {_html_value(verdict)}</p>
+<p>{_html_value(verdict_reason)}{archived_note}</p>
 <p><b>Models:</b> {_html_value(view.get('observed_models') or ['unresolved'])} · <b>config:</b> {_html_value(view.get('config_hash'))}</p>
 <div class="metrics">{metrics}</div></section>
 <section class="evidence"><h2>Evidence files</h2><ul>{evidence}</ul></section>
@@ -352,11 +388,8 @@ def render_inspection(view: dict[str, Any]) -> str:
         text = " ".join(str(value or "").split())
         return text if len(text) <= limit else text[: limit - 1] + "…"
 
-    verdict = view.get("quality_verdict") or (
-        "PASS" if view.get("gate_pass") is True
-        else "FAIL" if view.get("gate_pass") is False
-        else "N/A"
-    )
+    verdict = view.get("verdict_label") or "N/A"
+    historical = view.get("historical_quality_verdict")
     lines = [
         f"Run: {view['run_dir']}",
         f"Suite: {view.get('suite_id') or 'unknown'} | mode={view.get('skill_mode') or 'unknown'} "
@@ -364,6 +397,14 @@ def render_inspection(view: dict[str, Any]) -> str:
         f"Verdict: {verdict} | records={view.get('matching_record_count', view['record_count'])}"
         f"/{view['record_count']} "
         f"| status={view['status_counts']}",
+        f"  {view.get('verdict_reason') or ''}",
+    ]
+    if historical is not None and historical != view.get("quality_verdict"):
+        lines.append(
+            f"  (archived scores.json said quality_verdict={historical!r} — "
+            "superseded by the structured re-derivation above, not shown as the conclusion)"
+        )
+    lines += [
         f"Models: {', '.join(view.get('observed_models') or []) or 'unresolved'}",
         "Evidence paths:",
     ]
@@ -390,6 +431,8 @@ def render_inspection(view: dict[str, Any]) -> str:
             lines.append(f"    prompt: {excerpt(record['prompt'], 180)}")
         if record.get("final_answer"):
             lines.append(f"    answer: {excerpt(record['final_answer'], 300)}")
+        if record.get("reasoning"):
+            lines.append(f"    reasoning: {excerpt(record['reasoning'], 300)}")
         if record["tool_calls"] or record["artifacts"]:
             lines.append(
                 f"    tools={record['tool_calls'] or []} artifacts={record['artifacts'] or []}"

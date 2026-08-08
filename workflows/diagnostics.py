@@ -12,6 +12,10 @@ from typing import Any
 
 from contracts import RoutingCase
 
+# 不算在被测 skill 头上的失败：评测系统/网络/runtime 自己挂了（AGENTS.md ★★★ ⑥）。
+# score_full / score_routing / viewer / compare_runs 共用同一份分类，别各自写一份漂移。
+SYSTEM_FAILURE_KINDS = ("runtime", "network", "harness")
+
 
 def canonical_model_identity(model: str) -> str:
     """Return the provider-neutral part of a concrete model identifier.
@@ -135,4 +139,69 @@ def failure_summary(runs: Iterable[dict[str, Any]]) -> dict[str, Any]:
             {"category": key, "action": _REMEDIATION.get(key, _REMEDIATION["unclassified"])}
             for key in remediation_keys
         ],
+    }
+
+
+def system_failure_counts(runs: Iterable[dict[str, Any]]) -> tuple[int, dict[str, int]]:
+    """How many runs never reached the skill at all, and why.
+
+    ``error_kind`` is the only structured signal used here — never the error
+    message text — so a run flips into this bucket by its recorded kind, not
+    by pattern-matching provider prose (HANDOFF ★ 更新 16, requirement 3).
+    """
+    by_kind = Counter(
+        run.get("error_kind") for run in runs if run.get("error_kind") in SYSTEM_FAILURE_KINDS
+    )
+    return sum(by_kind.values()), dict(sorted(by_kind.items()))
+
+
+def derive_verdict(
+    *,
+    n_runs: int,
+    n_system_failures: int,
+    system_failures_by_kind: dict[str, int] | None = None,
+    observed_passed: bool | None,
+    is_mock: bool = False,
+) -> dict[str, Any]:
+    """The single place that turns run facts into pass / fail / indeterminate.
+
+    Every consumer — score_full, score_routing, pipeline inspect, pipeline
+    view, compare_runs — must call this instead of computing its own verdict
+    or trusting a stored ``quality_verdict``/``gate_pass`` field as the
+    conclusion. That field can be stale (written by an older scorer, or by a
+    run that never got scored) and stale verdicts are what let the same
+    all-system-failure run show "FAIL" in one place and "N/A" in another
+    (HANDOFF ★ 更新 16). The system-failure check runs first and overrides
+    any ``observed_passed`` passed in, precisely so a stale FAIL can't leak
+    through when the structured counts show the Skill never executed.
+    """
+    if is_mock:
+        return {
+            "quality_verdict": "not_evaluated",
+            "gate_pass": None,
+            "label": "NOT EVALUATED",
+            "reason": "synthetic mock run — pipeline smoke only, not a skill-quality verdict",
+        }
+    by_kind = dict(sorted((system_failures_by_kind or {}).items()))
+    if n_runs == 0 or n_system_failures >= n_runs:
+        kinds = ", ".join(f"{k}={v}" for k, v in by_kind.items())
+        reason = (
+            "no runs recorded" if n_runs == 0 else
+            f"all {n_runs} run(s) are system/environment/provider failures ({kinds}); "
+            "the Skill never executed — this is not a pass or fail"
+        )
+        return {"quality_verdict": "indeterminate", "gate_pass": None,
+                "label": "INDETERMINATE", "reason": reason}
+    if observed_passed is None:
+        return {
+            "quality_verdict": "indeterminate",
+            "gate_pass": None,
+            "label": "INDETERMINATE",
+            "reason": "no gate metric could be evaluated (all N/A or judge-uncalibrated)",
+        }
+    return {
+        "quality_verdict": "pass" if observed_passed else "fail",
+        "gate_pass": observed_passed,
+        "label": "PASS" if observed_passed else "FAIL",
+        "reason": "deterministic gate PASS" if observed_passed else "deterministic gate FAIL",
     }

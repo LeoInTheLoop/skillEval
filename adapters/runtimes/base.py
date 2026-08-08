@@ -31,7 +31,10 @@ _NETWORK_HINTS = ("connection", "network", "unreachable", "ratelimit", "rate_lim
                   "authentication", "apierror", "apistatus", "apitimeout", "ssl", "dns",
                   "timed out", "refused")
 
-_QUOTA_HINTS = ("quota", "insufficient balance", "insufficient credits", "billing hard limit")
+_QUOTA_HINTS = ("quota", "insufficient balance", "insufficient credits", "billing hard limit",
+                # 阿里云百炼欠费的措辞不带 "quota" 这个词，之前会被误判成普通网络问题
+                # （HANDOFF ★ 更新 16 / docker-t1）。
+                "account is in good standing", "overdue payment", "arrearage")
 _AUTH_HINTS = ("authentication", "unauthorized", "invalid api key", "invalid_api_key", "forbidden")
 _DNS_HINTS = ("dns", "name or service not known", "nodename nor servname", "getaddrinfo")
 
@@ -57,16 +60,7 @@ def classify_error(exc: BaseException) -> ErrorKind:
     return "harness"
 
 
-def classify_error_subkind(exc: BaseException, kind: ErrorKind | None = None) -> ErrorSubkind | None:
-    """Refine model/API failures for remediation while preserving ErrorKind.
-
-    Provider quota exhaustion and transient rate limiting are both API-layer
-    failures, but users need different next actions.  The raw provider error
-    remains in RunResult.error; this is only the stable reporting label.
-    """
-    if (kind or classify_error(exc)) != "network":
-        return None
-    blob = f"{type(exc).__name__} {exc}".lower()
+def _subkind_from_text(blob: str) -> ErrorSubkind:
     if any(hint in blob for hint in _QUOTA_HINTS):
         return "provider_quota_exhausted"
     if any(hint in blob for hint in _AUTH_HINTS):
@@ -78,6 +72,26 @@ def classify_error_subkind(exc: BaseException, kind: ErrorKind | None = None) ->
     if "rate" in blob and "limit" in blob:
         return "provider_rate_limited"
     return "network_connectivity"
+
+
+def classify_error_subkind(exc: BaseException, kind: ErrorKind | None = None) -> ErrorSubkind | None:
+    """Refine model/API failures for remediation while preserving ErrorKind.
+
+    Provider quota exhaustion and transient rate limiting are both API-layer
+    failures, but users need different next actions.  The raw provider error
+    remains in RunResult.error; this is only the stable reporting label.
+    """
+    if (kind or classify_error(exc)) != "network":
+        return None
+    return _subkind_from_text(f"{type(exc).__name__} {exc}".lower())
+
+
+def classify_error_text_subkind(text: str, kind: ErrorKind) -> ErrorSubkind | None:
+    """Same hint matching as classify_error_subkind, for errors that never went
+    through a raised Python exception (e.g. OpenClaw CLI stderr, §17.3)."""
+    if kind != "network":
+        return None
+    return _subkind_from_text(text.lower())
 
 
 @runtime_checkable

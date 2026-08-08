@@ -7,7 +7,12 @@ import subprocess
 import pandas as pd
 import pytest
 
-from adapters.runtimes.base import BaseRuntimeAdapter, classify_error, classify_error_subkind
+from adapters.runtimes.base import (
+    BaseRuntimeAdapter,
+    classify_error,
+    classify_error_subkind,
+    classify_error_text_subkind,
+)
 from contracts import RoutingCase, RunResult, RuntimeCapabilities
 from workflows.matrix import build_matrix
 from workflows.run_routing import run_one
@@ -139,11 +144,24 @@ def test_litellm_把断网包装成_InternalServerError_也要认成网络():
     ("[Errno 8] nodename nor servname provided, or not known", "network_dns"),
     ("429 rate limit", "provider_rate_limited"),
     ("invalid API key", "provider_authentication"),
+    # 阿里云百炼欠费的措辞（docker-t1 的真实错误文案），HANDOFF ★ 更新 16
+    ("Access denied, please make sure your account is in good standing.",
+     "provider_quota_exhausted"),
+    ('{"type":"Arrearage"}', "provider_quota_exhausted"),
 ])
 def test_模型网络错误保留可操作的子分类(message, subkind):
     exc = type("ProviderError", (Exception,), {"__module__": "litellm.exceptions"})(message)
     assert classify_error(exc) == "network"
     assert classify_error_subkind(exc) == subkind
+
+
+def test_历史run没有存过exception也能从原始错误文本重分类子类():
+    """OpenClaw CLI 失败从不抛异常，subkind 只能从落盘的 error 文本重建（不改 runs.jsonl）。"""
+    text = ("openclaw exit=1: ...reason=auth next=none detail=400 Access denied, please "
+            "make sure your account is in good standing. For details, see: "
+            "https://www.alibabacloud.com/help/en/model-studio/error-code#overdue-payment")
+    assert classify_error_text_subkind(text, "network") == "provider_quota_exhausted"
+    assert classify_error_text_subkind(text, "runtime") is None
 
 
 def test_评测系统自己的_bug_不许被误判成网络():

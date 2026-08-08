@@ -41,7 +41,7 @@ from contracts import (
 from adapters.routing_inputs import create_routing_input
 
 from . import register
-from .base import BaseRuntimeAdapter
+from .base import BaseRuntimeAdapter, classify_error_text_subkind
 from .litellm import parse_selection
 
 # OpenClaw 启动时会做 bedrock 模型发现：先读环境变量，再回落到 ~/.aws/credentials。
@@ -675,6 +675,7 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
                            timeout=request.timeout_seconds, env=self._env())
         if p.returncode != 0:
             err = p.stderr.strip()
+            error_kind = "network" if _looks_like_network(err) else "runtime"
             return RunResult(
                 case_id=request.case_id, repeat_index=request.repeat_index,
                 model=str(request.model.get("id", "openclaw")),
@@ -682,7 +683,10 @@ class OpenClawRuntimeAdapter(BaseRuntimeAdapter):
                 error=f"openclaw exit={p.returncode}: {err[-500:]}",
                 # CLI 非 0 退出默认算 runtime；但它也可能只是在转述上游 API 的网络失败，
                 # 那种要记成 network，否则「模型服务挂了」会被算成「runtime 不稳」
-                error_kind="network" if _looks_like_network(err) else "runtime",
+                error_kind=error_kind,
+                # network 失败进一步区分 auth/quota/DNS/timeout/rate-limit，用户才知道该
+                # 充值还是查网络（HANDOFF ★ 更新 16）；err 只走 CLI stderr，没有异常对象。
+                error_subkind=classify_error_text_subkind(err, error_kind),
             )
 
         text = self._extract_text(p.stdout)

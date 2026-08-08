@@ -4,6 +4,52 @@
 
 ---
 
+## 2026-08-08 (更新16) · pass/fail/indeterminate 收成唯一推导点
+
+同一个全系统故障的历史 run（`docker-t1`，4/4 openclaw exit=1、`error_kind=network`，
+真实原因是阿里云百炼账号欠费）在 Viewer/inspect 首屏显示 `FAIL`、`error_kind` 只到
+`network`、`error_subkind` 空——三层结论互相矛盾且全错。根因是每个出口各自读
+`scores.json` 或各自拿 `gate_pass` 三元判定，没有一个共享的推导点。
+
+`workflows/diagnostics.py` 新增 `derive_verdict()`：只吃结构化 run 事实（`n_runs`、
+`n_system_failures`、`system_failures_by_kind`、已算出的 `observed_passed`、`is_mock`），
+系统故障判据在最前面短路——`n_system_failures >= n_runs` 时无论传进来的 `observed_passed`
+是什么都强制 `indeterminate`，`gate_pass=None`，理由写清楚"the Skill never executed"。
+这个短路顺序是故意的：`gate_pass` 可能来自一份 stale 的 `scores.json`（旧代码算的
+FAIL），不能让它在这一步漏过去。`score_full`、`score_routing`、`pipeline inspect`、
+`pipeline view`、`compare_runs` 六个出口全部改调这一个函数；`inspect_run` 把
+`scores.json` 里的历史 `quality_verdict`/`gate_pass` 降级成 `historical_*` 字段，只展示
+不当结论。
+
+`adapters/runtimes/base.py` 的 `_QUOTA_HINTS` 补上阿里云欠费措辞（"account is in good
+standing" / "overdue payment" / "arrearage"），并把原来揉在 `classify_error_subkind`
+里的文本匹配拆成 `_subkind_from_text()`，新增 `classify_error_text_subkind()` 给从来
+没经过异常对象、只有落盘错误文本的历史/CLI 失败（OpenClaw 走 subprocess，非零退出码
+从不 raise）重新分类；`openclaw.py` 的 CLI 失败路径现在也顺手存了 `error_subkind`，
+不只是展示层兜底。
+
+**意外发现一个更大的独立 bug**：`score_full.py` 排除系统故障用了
+`(row.case_id, row.repeat) in system_conversations`，`row` 是 `.apply(axis=1)` 里的
+`Series`，而 `repeat` 这个列名和 `Series.repeat()`（ndarray 风格的逐元素重复方法）撞了——
+属性访问拿到的是绑定方法，永远不在 `system_conversations` 集合里，导致这个排除逻辑从
+它被加上的那天起，对**所有**跑过 score_full 的 run 都是空操作。不止 docker-t1；任何
+混了系统故障和真实结果的 run，分母都被悄悄算错。改成 `row["repeat"]` 字典访问。这类
+bug 完全没有测试覆盖——已有的
+`test_系统故障不进维度分的分母` 只测 `aggregate()` 本身，从没测过 `main()` 里这段真正
+的过滤代码。
+
+真实回归：重跑 `docker-t1`（`runs.jsonl` sha256 前后一致，未改写），`score_full`、
+`pipeline inspect`、`pipeline view` 现在给出同一个 `INDETERMINATE`，理由字符串完全
+相同，`error_subkind` 都是 `provider_quota_exhausted`。另加一份 hermetic pytest 镜像
+同样的 run 形状（`outputs/` 不进 git，CI 里跑不到真实历史目录）。
+
+顺手做：`RunResult.reasoning`（路由选择理由）以前只能去 `runs.jsonl` 手翻，现在在
+`pipeline inspect`/HTML 单题 Trace 里能直接看到。
+
+**验证基线：404 passed / 1 skipped。**
+
+---
+
 ## 2026-08-05 (P7-2) · 一条命令生成自包含离线 HTML Viewer
 
 `pipeline view --run-dir ... --open` 现在从第 14 次的只读 projection 生成单文件

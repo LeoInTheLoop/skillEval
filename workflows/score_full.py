@@ -39,6 +39,7 @@ from evaluators import (
     scalar_metrics,
 )
 from evaluators.trajectory import merge_trajectory_metrics, write_trajectory_projection
+from workflows.diagnostics import SYSTEM_FAILURE_KINDS, derive_verdict
 from workflows.grade import load_grading, resolve_run_dataset
 from workflows.score_routing import check_gate, describe_dimension, latest_run_dir
 
@@ -47,7 +48,7 @@ SCORE_VERSION = "score-full-v1"
 
 # 不算在被测 skill 头上的失败：评测系统/网络/runtime 自己挂了（AGENTS.md ★★★ ⑥）。
 # 把它们留在分母里，就等于「我们的 CLI 崩了」→「这个 skill 不行」。
-_SYSTEM_FAILURES = ("runtime", "network", "harness")
+_SYSTEM_FAILURES = SYSTEM_FAILURE_KINDS
 
 
 def artifact_hit(pattern: str, artifacts: list[dict]) -> bool:
@@ -211,6 +212,58 @@ def aggregate(df: pd.DataFrame, assertion_pass_rate: float | None = None
     }
 
 
+def write_no_evaluable_report(
+    d: Path, *, suite: dict, snap: dict, all_df: pd.DataFrame, sysfail: pd.DataFrame,
+    html_output: Path, scores_output: Path,
+) -> None:
+    """Persist a useful, honest report when every conversation is a system failure.
+
+    Old behavior here was ``raise SystemExit`` — no artifact at all — which is why a
+    stale scores.json from an even older scorer (written before this guard existed)
+    kept being read by `pipeline inspect`/`view` as if it were current (HANDOFF ★
+    更新 16 / docker-t1). Mirrors score_routing.write_no_evaluable_report.
+    """
+    is_mock = bool(snap.get("mock"))
+    by_kind = sysfail.error_kind.value_counts().to_dict() if len(sysfail) else {}
+    outcome = derive_verdict(
+        n_runs=int(len(all_df)), n_system_failures=int(len(sysfail)),
+        system_failures_by_kind=by_kind, observed_passed=None, is_mock=is_mock,
+    )
+    gate_cfg = suite.get("scoring", {}).get("gate", {}) or {}
+    gate = [{"metric": m, "condition": c, "actual": None, "pass": None}
+            for m, c in gate_cfg.items()]
+    payload = {
+        "run_dir": d.name,
+        "suite_id": suite.get("suite_id"),
+        "run_mode": "synthetic_mock" if is_mock else "real",
+        "quality_verdict": outcome["quality_verdict"],
+        "verdict_reason": outcome["reason"],
+        "config_hash": snap.get("config_hash"),
+        "model": snap.get("resolved_model", {}).get("id"),
+        "n_cases": int(all_df.case_id.nunique()),
+        "n_runs": int(len(all_df)),
+        "n_system_failures": int(len(sysfail)),
+        "system_failures_by_kind": by_kind,
+        "scores": {},
+        "gate": gate,
+        "gate_enforced": not is_mock,
+        "gate_pass": outcome["gate_pass"],
+    }
+    scores_output.parent.mkdir(parents=True, exist_ok=True)
+    scores_output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    html_output.parent.mkdir(parents=True, exist_ok=True)
+    html_output.write_text("\n".join([
+        "<h2>Full Skill Eval Report — no evaluable runs</h2>",
+        f"<p>{int(len(all_df))} runs; {int(len(sysfail))} system/environment/provider "
+        f"failures ({by_kind}).</p>",
+        f"<p><b>Verdict: {outcome['label']}</b> — {outcome['reason']}</p>",
+        "<p>Skill quality is <b>N/A</b>: infrastructure/provider failures are not a "
+        "skill-quality verdict.</p>",
+    ]), encoding="utf-8")
+    print(f"  → GATE {outcome['label']}\n    {outcome['reason']}")
+    print(f"\nscores.json + report.html → {d}")
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--dir", help="run 目录，默认取 outputs/ 下最新的一个")
@@ -261,7 +314,11 @@ def main() -> None:
     system_conversations = set(zip(sysfail.case_id, sysfail.repeat))
     df = all_df[
         ~all_df.apply(
-            lambda row: (row.case_id, row.repeat) in system_conversations,
+            # dict access, not `row.repeat`: a column named "repeat" collides with
+            # Series.repeat() via attribute access, which silently always returns a
+            # bound method (never in `system_conversations`) — the exclusion below
+            # was a no-op for every run until this was caught while fixing update 16.
+            lambda row: (row["case_id"], row["repeat"]) in system_conversations,
             axis=1,
         )
     ]
@@ -275,7 +332,14 @@ def main() -> None:
         print(f"  ⚠️ 系统故障 {len(sysfail)} 次已从分母剔除：{by_kind}"
               f"  ← 这些不是 skill 的问题，别算进它头上")
     if df.empty:
-        raise SystemExit("全部运行都是系统故障，没有可评的结果")
+        # 全部运行都是系统故障：这不是「skill 不行」，是「skill 根本没跑」。
+        # 以前这里直接 SystemExit、不落盘，导致更老版本留下的 stale scores.json
+        # 一直被当作现状读（HANDOFF ★ 更新 16）。
+        write_no_evaluable_report(
+            d, suite=suite, snap=snap, all_df=all_df, sysfail=sysfail,
+            html_output=html_output, scores_output=scores_output,
+        )
+        return
 
     grading = None if args.no_grading else load_grading(
         d, snap, args.judge_id, args.grading_file
@@ -476,13 +540,17 @@ def main() -> None:
                   "这些行不参与 PASS/FAIL，整体 gate 记 indeterminate")
     # 一条都判不了时不许报 PASS：那是「没测」，不是「通过」
     observed_passed = calibrated_gate_outcome(gate_rows, unqualified)
-    passed = None if is_mock else observed_passed
-    verdict = (
-        "NOT EVALUATED（synthetic mock 只验证管道）"
-        if is_mock else
-        {True: "PASS", False: "FAIL", None: "无法判定（可判维度全为 N/A）"}[passed]
+    # 单一推导点（HANDOFF ★ 更新 16）：连部分系统故障混在里面时，也要让它先过一遍
+    # 结构化 counts 的校验，不能让 gate 数字直接冒充结论。
+    by_kind = sysfail.error_kind.value_counts().to_dict()
+    outcome = derive_verdict(
+        n_runs=int(len(all_df)), n_system_failures=int(len(sysfail)),
+        system_failures_by_kind=by_kind, observed_passed=observed_passed, is_mock=is_mock,
     )
+    passed = outcome["gate_pass"]
+    verdict = outcome["label"]
     print(f"  → QUALITY VERDICT {verdict}" if is_mock else f"  → GATE {verdict}")
+    print(f"    {outcome['reason']}")
 
     gate_records = [
         {
@@ -503,11 +571,8 @@ def main() -> None:
         "run_dir": d.name,
         "suite_id": suite.get("suite_id"),
         "run_mode": "synthetic_mock" if is_mock else "real",
-        "quality_verdict": (
-            "not_evaluated"
-            if is_mock else
-            {True: "pass", False: "fail", None: "indeterminate"}[passed]
-        ),
+        "quality_verdict": outcome["quality_verdict"],
+        "verdict_reason": outcome["reason"],
         "config_hash": snap.get("config_hash"),
         "model": snap.get("resolved_model", {}).get("id"),
         "n_cases": int(all_df.case_id.nunique()),
@@ -516,7 +581,7 @@ def main() -> None:
         "n_turns": int(len(all_df)),
         "n_skipped_turns": int(all_df.skipped.sum()),
         "n_system_failures": int(len(sysfail)),
-        "system_failures_by_kind": sysfail.error_kind.value_counts().to_dict(),
+        "system_failures_by_kind": by_kind,
         "scores": scores,
         "evaluation": layers,
         "evaluator_manifest": evaluator_gauges,
@@ -594,6 +659,7 @@ def main() -> None:
         f"系统故障 {out['n_system_failures']} 次（已剔除） | "
         f"config_hash <code>{snap.get('config_hash')}</code></p>",
         f"<h3>确定性维度 — {'QUALITY VERDICT' if is_mock else 'GATE'} {verdict}</h3>",
+        f"<p>{outcome['reason']}</p>",
         f"<table border=1 cellpadding=4><tr><th>维度</th><th>值</th></tr>{dim_html}</table>",
         (f"<h3>语义维度（judge {judge['id']} / {judge['model']}，0–1 连续分）</h3>"
          f"<table border=1 cellpadding=4><tr><th>维度</th><th>分</th><th>说明</th></tr>"
