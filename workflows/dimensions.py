@@ -117,6 +117,23 @@ STANDARD_DIMENSIONS: dict[str, Dimension] = {
         requires=("prompt", "output"),
         source="G-Eval coherence/fluency 的实用变体",
     ),
+    "readability": Dimension(
+        id="readability",
+        label="可读性（读得顺不顺）",
+        question="输出读起来顺不顺：有没有乱码或莫名其妙的符号/数字，结构有没有逻辑，"
+                  "用词（术语 vs 口语）是否贴合能从请求判断出的目标读者？",
+        rubric={
+            "1.0": "无乱码、无莫名其妙的符号或数字；结构分明、前后有逻辑；"
+                   "术语/口语的选择贴合目标读者（判断不出读者时按通用可读性给分）",
+            "0.5": "干净可读，但结构松散、层次不清，或用词风格与目标读者有明显错位",
+            "0.0": "出现乱码、多余或无法解释的符号/数字（如格式错乱的编号、破碎的转义字符），"
+                   "或结构混乱到读不出逻辑线索——这一项一票否决，其余两项再好也封顶 0.0",
+        },
+        requires=("prompt", "output"),
+        source="SummEval fluency/coherence 轴的合并变体；本项目未装 DeepEval/autoevals，"
+               "按 §20.6 结论内置。与 faithfulness 分工：faithfulness 管『数字是不是编的』，"
+               "这里管『读的时候顺不顺』，不重复判编造",
+    ),
 }
 
 DEFAULT_DIMENSIONS = ("faithfulness", "completeness", "relevancy")

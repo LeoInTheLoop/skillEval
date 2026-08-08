@@ -73,6 +73,12 @@ def test_suite_里拼错维度名在运行前就被拒():
         SuiteJudgeSpec(id="j", model="m", dimensions=["not_a_dimension"])
 
 
+def test_可读性维度乱码符号一票否决():
+    """用户明确要求：乱码/莫名其妙符号是必改项，不能被结构和用词两项拉平均分抵消。"""
+    d = dims.STANDARD_DIMENSIONS["readability"]
+    assert "乱码" in d.rubric["0.0"] and "符号" in d.rubric["0.0"]
+
+
 def test_维度指纹带版本():
     fp = dims.fingerprint(dims.resolve(["faithfulness", "completeness"]))
     assert fp == {"faithfulness": "v1", "completeness": "v1"}

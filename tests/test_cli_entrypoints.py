@@ -655,6 +655,7 @@ def test_suggest_apply_main_走到新版本目录与复验suite(tmp_path, monkey
                 "pattern": "没写死必须落盘",
                 "case_ids": ["brief-pos-01"],
                 "metric": "task_completion",
+                "root_cause": "skill_gap",
                 "evidence": [{"case_id": "brief-pos-01", "quote": "声明必须调用的 tool 没调"}],
                 "change": "正文补一条：必须把结果写成文件。",
             }]}, ensure_ascii=False)

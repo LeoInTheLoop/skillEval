@@ -35,6 +35,9 @@ DEFAULT_API_BASE_ENV = "DASHSCOPE_BASE_URL"
 DEFAULT_API_KEY_ENV = "DASHSCOPE_API_KEY"
 SYSTEM_PROMPT = """你是 Agent Skill 失败分析器。
 基于失败 case 的模型原文证据，把多个失败按共同根因聚类，并提出对 SKILL.md 的具体修改建议。
+每个 cluster 还要判断根因属于 skill_gap（SKILL.md 没写清楚/缺失/矛盾）还是
+model_noncompliance（SKILL.md 已经把这件事说清楚了，但模型没照做）；判不准就归 skill_gap，
+不替模型的能力下结论。
 只返回 JSON；不得编造证据，不得逐题各写一条，不得直接改写文件。"""
 
 
@@ -45,6 +48,16 @@ StopReason = Literal["gate_pass", "budget_exceeded", "max_iterations"]
 `exact_set_match` 是 routing-only 的唯一失败形态（选错 skill）。full eval 里选对了
 skill 也可能失败 —— 产物没落、tool 没调、内容写错，所以多两个：`task_completion`
 （确定性断言没过）和 `assertion`（judge 判定的语义断言没过）。
+"""
+
+RootCause = Literal["skill_gap", "model_noncompliance"]
+"""这组失败到底该怪 SKILL.md 还是模型没听话，决定 `change` 该怎么写。
+
+`skill_gap`：SKILL.md 没提这件事、说得含糊，或前后矛盾 —— `change` 该新增/改写指令内容。
+`model_noncompliance`：SKILL.md 已经把这条要求写清楚了，模型看了也没照做 —— `change`
+不该是加新内容，而是提高这条要求的显著度：挪到更靠前、单独成段、改成必须打勾的
+checklist、加"不许 XXX"这类强约束词、或补一个反例。判不准时默认 `skill_gap`，
+不替模型的能力下结论（这属于人工复核该做的事，不是聚类阶段该猜的）。
 """
 
 RAW_OUTPUT_LIMIT = 3000
@@ -79,6 +92,7 @@ class SuggestionCluster(BaseModel):
     pattern: str = Field(min_length=1)
     case_ids: list[str] = Field(min_length=1)
     metric: FailureMetric
+    root_cause: RootCause
     evidence: list[EvidenceQuote] = Field(min_length=1)
     change: str = Field(min_length=1)
 
@@ -600,11 +614,17 @@ def build_suggestion_prompt(
 
 [输出约束]
 - 输出对象格式：{{"suggestions":[...]}}
-- 每条 suggestion 字段只有 pattern,case_ids,metric,evidence,change
+- 每条 suggestion 字段只有 pattern,case_ids,metric,root_cause,evidence,change
 - metric 只能取本批失败里出现过的值：{metrics}
 - 本批失败 case 共 {len(case_ids)} 个：{case_ids}
 - **每个 case_id 只能出现在一条 suggestion 里**；同一个 case 拆进多条会被判为重复归因而整批拒收
 - 因此本批最多给 {len(case_ids)} 条 suggestion；有共同根因就合并成更少的条数
+- root_cause 只能是 "skill_gap" 或 "model_noncompliance"：
+  - skill_gap：SKILL.md 没提这件事、说得含糊，或前后矛盾 → change 应该新增/改写指令内容
+  - model_noncompliance：SKILL.md 已经把这条要求写清楚了，模型看了也没照做 → change
+    不该是加新内容，而是提高这条要求的显著度：挪到更靠前、单独成段、改成必须打勾的
+    checklist、加"不许 XXX"这类强约束词、或补一个反例
+  - 拿不准算 skill_gap，不要替模型的能力下判断
 - quote 必须从上面 JSON 里**该 case 自己的** raw_output 或 failure_detail 中**逐字复制**
   一整段连续文本：不许跨段拼接、不许省略中间、不许加省略号、不许改标点、
   不许引用 [当前 SKILL.md] 里的话。拿不准就复制短一点的一句。
@@ -617,6 +637,7 @@ def build_suggestion_prompt(
   {{"pattern": "一句话说清这组失败的共同根因",
     "case_ids": ["{case_ids[0]}"],
     "metric": "{metrics[0]}",
+    "root_cause": "skill_gap",
     "evidence": [{{"case_id": "{case_ids[0]}", "quote": "逐字复制的一段原文"}}],
     "change": "改哪里、怎么改"}}
 ]}}
@@ -786,6 +807,9 @@ def build_apply_prompt(*, skill_text: str, suggestions: list[SuggestionCluster])
 
 [改写约束]
 - 只做上面建议里点名的改动，不要顺手重写其他部分
+- root_cause 是 model_noncompliance 的建议：SKILL.md 已经说清楚了，模型只是没照做，
+  优先用「前置 / 独立成段 / 加粗必须类措辞 / 改成 checklist / 补反例」这类提高显著度的
+  手法落实，而不是在原处简单插一句话
 - 保留 frontmatter 的 name 字段原样不变（它是 skill_id，改了就换了一个 skill）
 - 输出改写后的**完整** SKILL.md 全文，从 `---` 开始
 - 不要输出解释、不要用 ``` 围栏包裹

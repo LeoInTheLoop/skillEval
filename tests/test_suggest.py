@@ -127,6 +127,7 @@ def _suggestion_response(quote="通常是 PDF 格式"):
                     "pattern": "按文件格式联想，而不是按任务类型激活",
                     "case_ids": ["none-rej-01", "none-rej-02"],
                     "metric": "exact_set_match",
+                    "root_cause": "skill_gap",
                     "evidence": [
                         {"case_id": "none-rej-01", "quote": quote},
                         {"case_id": "none-rej-02", "quote": "通常以 PDF 交付"},
@@ -197,6 +198,7 @@ def test_generate拒绝逐题一条没有聚类(tmp_path):
                 "pattern": "p1",
                 "case_ids": ["none-rej-01"],
                 "metric": "exact_set_match",
+                "root_cause": "skill_gap",
                 "evidence": [{"case_id": "none-rej-01", "quote": "PDF 格式"}],
                 "change": "改 description",
             },
@@ -204,6 +206,7 @@ def test_generate拒绝逐题一条没有聚类(tmp_path):
                 "pattern": "p2",
                 "case_ids": ["none-rej-02"],
                 "metric": "exact_set_match",
+                "root_cause": "skill_gap",
                 "evidence": [{"case_id": "none-rej-02", "quote": "PDF 交付"}],
                 "change": "改 exclusions",
             },
@@ -221,6 +224,30 @@ def test_generate拒绝逐题一条没有聚类(tmp_path):
             params={"temperature": 0},
             completion=lambda **_: json.dumps(payload, ensure_ascii=False),
         )
+
+
+def test_建议缺root_cause直接报错不静默放行():
+    """root_cause 决定 change 该加内容还是该强调既有内容，漏了不能悄悄当 skill_gap。"""
+    from pydantic import ValidationError
+
+    from workflows.suggest import SuggestionCluster
+
+    with pytest.raises(ValidationError):
+        SuggestionCluster.model_validate({
+            "pattern": "p", "case_ids": ["c1"], "metric": "assertion",
+            "evidence": [{"case_id": "c1", "quote": "q"}], "change": "x",
+        })
+
+
+def test_prompt要求区分根因是skill问题还是模型不听话(tmp_path):
+    from workflows.suggest import build_suggestion_prompt
+
+    failures = collect_routing_failures(_run_dir(tmp_path))
+    prompt = build_suggestion_prompt(
+        target_skill="pdf", skill_text="---\nname: pdf\n---\n", failures=failures,
+    )
+    assert "skill_gap" in prompt
+    assert "model_noncompliance" in prompt
 
 
 def test_resolve_source_model默认继承source_run配置(tmp_path):
@@ -367,6 +394,7 @@ def test_full的证据quote可以引用failure_detail(tmp_path):
                 "pattern": "术语校对与产物落盘两条硬要求都没写死",
                 "case_ids": ["brief-pos-01", "brief-pos-02"],
                 "metric": "task_completion",
+                "root_cause": "skill_gap",
                 "evidence": [
                     {"case_id": "brief-pos-01", "quote": "声明必须调用的 tool 没调"},
                     {"case_id": "brief-pos-02", "quote": "『进调报告』原样保留"},
@@ -410,6 +438,7 @@ def _cluster(**overrides):
         "pattern": "没写死必须落盘",
         "case_ids": ["brief-pos-01"],
         "metric": "task_completion",
+        "root_cause": "skill_gap",
         "evidence": [{"case_id": "brief-pos-01", "quote": "声明必须调用的 tool 没调"}],
         "change": "正文补一条：必须把结果写成文件。",
     }
@@ -535,6 +564,7 @@ def test_引用允许剥掉markdown标记但不许改字(tmp_path):
 
     ok = [SuggestionCluster(
         pattern="人名幻觉", case_ids=["brief-pos-01"], metric="assertion",
+        root_cause="skill_gap",
         evidence=[{"case_id": "brief-pos-01", "quote": "产物 out/x.md 中未出现赵磊此人名"}],
         change="正文补一条：人名必须来自输入。",
     )]
@@ -542,6 +572,7 @@ def test_引用允许剥掉markdown标记但不许改字(tmp_path):
 
     fabricated = [SuggestionCluster(
         pattern="人名幻觉", case_ids=["brief-pos-01"], metric="assertion",
+        root_cause="skill_gap",
         evidence=[{"case_id": "brief-pos-01", "quote": "产物中未出现张三此人名"}],
         change="正文补一条：人名必须来自输入。",
     )]
@@ -730,6 +761,7 @@ def test_pdf_v1能力基准_mock建议按任务而非文件格式激活():
             "pattern": "模型按 PDF 文件格式联想激活，而没有判断用户要求的任务类型",
             "case_ids": sorted(reasons),
             "metric": "exact_set_match",
+            "root_cause": "skill_gap",
             "evidence": [
                 {"case_id": case_id, "quote": reason}
                 for case_id, reason in reasons.items()

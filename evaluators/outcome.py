@@ -20,7 +20,7 @@ class OutcomeEvaluator:
         semantic = [
             scores.get(name) for name in (
                 "correctness", "faithfulness", "completeness", "relevancy",
-                "instruction_following", "conciseness",
+                "instruction_following", "conciseness", "readability",
             )
             if scores.get(name) is not None
         ]
